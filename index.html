@@ -10535,6 +10535,13 @@ function updateRouteMarkersStatus(statusChanges) {
         // Sync delivery status from Supabase to update local cache and map markers
         // This is called when loading cached markers to ensure cross-device sync
         async function syncDeliveryStatusFromSupabase() {
+
+            const db = (typeof initSupabaseClient === 'function') ? await initSupabaseClient() : null;
+            if (!db || typeof db.from !== 'function') {
+                // Sem Supabase disponível: mantém offline-first
+                return;
+            }
+
             if (!isOnline || !map || !map.getSource('route-stops')) return;
 
             // BLOQUEIO: Não busca dados do servidor enquanto está enviando dados offline
