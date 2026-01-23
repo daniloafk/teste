@@ -11,6 +11,8 @@
     <title>Mapa Interativo</title>
 
 <script>
+        function __isPreserveEnabled__(){ return !!window.__preserveMarkersDuringSync__; }
+
 (function(){
   const REQUIRED = [
     "./vendor/mapbox-gl.min.css",
@@ -5574,8 +5576,9 @@
              */
             clearAll() {
                 this.clearAllPopups();
-                this.if (!__preserve__) { clearAllMarkers(); }
-                this.clearAllTimers();
+            if (typeof this.clearAllMarkers === 'function') { this.clearAllMarkers(); }
+            else if (typeof clearAllMarkers === 'function') { clearAllMarkers(); }
+            this.clearAllTimers();
             }
         };
 
