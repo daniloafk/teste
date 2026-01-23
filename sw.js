@@ -1,7 +1,7 @@
-// Service Worker - Mapa de Entregas v6
-const CACHE_NAME = 'mapa-entregas-v8';
+// Service Worker - Mapa de Entregas v7
+const CACHE_NAME = 'mapa-entregas-v9';
 const TILE_CACHE_NAME = 'mapbox-tiles-v2';
-const HTML_CACHE_NAME = 'mapa-html-v6';
+const HTML_CACHE_NAME = 'mapa-html-v7';
 
 // Ícones inline para notificações push (evita arquivos externos)
 const NOTIFICATION_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTIiIGhlaWdodD0iMTkyIiB2aWV3Qm94PSIwIDAgMTkyIDE5MiI+PGNpcmNsZSBjeD0iOTYiIGN5PSI5NiIgcj0iOTYiIGZpbGw9IiMzYjgyZjYiLz48cGF0aCBkPSJNOTYgMzJjLTI2LjUgMC00OCAyMS41LTQ4IDQ4djE2YzAgMTcuNy0xNC4zIDMyLTMyIDMydjE2aDY0YzAgMTcuNyAxNC4zIDMyIDMyIDMyczMyLTE0LjMgMzItMzJoNjR2LTE2Yy0xNy43IDAtMzItMTQuMy0zMi0zMlY4MGMwLTI2LjUtMjEuNS00OC00OC00OHoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=';
