@@ -11,6 +11,13 @@
     <title>Mapa Interativo</title>
 
 <script>
+
+        // Globals de estado (evita ReferenceError entre blocos)
+        var isOnline = navigator.onLine;
+
+        // Modal "mapa indisponível" removido; mantemos a variável para compatibilidade com código antigo
+        var dismissMapOfflineBtn = null;
+
         function __isPreserveEnabled__(){ return !!window.__preserveMarkersDuringSync__; }
 
 (function(){
@@ -5023,8 +5030,7 @@
         // OFFLINE SYSTEM - IndexedDB & Sync
         // ============================================
         let offlineDB = null;
-        let isOnline = navigator.onLine;
-        const dismissMapOfflineBtn = null;
+
         let isSyncing = false;
         let isSyncingPendingData = false; // Flag para bloquear syncs do servidor durante sync de dados offline
         let lastRouteMarkersSave = 0; // Timestamp do último save local (para proteção contra piscada)
@@ -8581,14 +8587,7 @@ function updateRouteMarkersStatus(statusChanges) {
                 });
             } catch (_) {}
         }
-
-        if (dismissMapOfflineBtn) {
-            (document.getElementById('dismissMapOfflineBtn')||null)?.addEventListener('click', () => {
-                mapOfflineDismissed = true;
-                if (mapOfflineOverlay) mapOfflineOverlay.style.display = 'none';
-            });
-        }
-
+        /* listener do botão de modal offline removido (modal desativado) */
         if (retryMapOnlineBtn) {
             retryMapOnlineBtn.addEventListener('click', tryReloadMap);
         }
@@ -9045,7 +9044,7 @@ function updateRouteMarkersStatus(statusChanges) {
         const originalOpenSidebar = typeof openSidebar === 'function' ? openSidebar : null;
 
         // Temporary marker for "View on map"
-        let viewMarker = null;
+        var viewMarker = null;
         let viewPopup = null;
 
         function removeViewMarker() {
