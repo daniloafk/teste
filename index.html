@@ -7309,7 +7309,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Save route markers GeoJSON to Supabase (com debounce para atualizações rápidas)
         function saveRouteMarkersToSupabase(geojson, stats) {
-            if (!isOnline || !window.db) return Promise.resolve(false);
+            if (!isOnline) return Promise.resolve(false);
 
             // Cancela timeout anterior (debounce)
             if (supabaseSaveTimeout) {
@@ -7326,10 +7326,14 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Load route markers GeoJSON from Supabase (for cross-device sync)
         async function loadRouteMarkersFromSupabase() {
-            if (!isOnline || !window.db) return null;
+
+            const db = (typeof initSupabaseClient === 'function') ? await initSupabaseClient() : null;
+            if (!isOnline || !db || typeof db.from !== 'function') return null;
+
+            if (!isOnline || !db) return null;
 
             try {
-                const { data, error } = await window.db
+                const { data, error } = await db
                     .from('route_markers_cache')
                     .select('geojson, stats, updated_at, version')
                     .eq('id', 'current')
@@ -7439,7 +7443,11 @@ function updateRouteMarkersStatus(statusChanges) {
         const ROUTE_MARKERS_SYNC_INTERVAL = 400; // 400ms (quase tempo real)
 
         async function syncRouteMarkersFromSupabase() {
-            if (!isOnline || !window.db || !map) return;
+
+            const db = (typeof initSupabaseClient === 'function') ? await initSupabaseClient() : null;
+            if (!isOnline || !db || typeof db.from !== 'function' || !map) return;
+
+            if (!isOnline || !db || !map) return;
             if (isSyncingMarkers) return; // Evita sincronizações simultâneas
 
             // BLOQUEIO: Não busca dados do servidor enquanto está enviando dados offline
