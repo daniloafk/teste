@@ -4962,11 +4962,32 @@
             async function initSupabaseClient() {
                 try {
                     if (!navigator.onLine) return null;
-                    if (window.db) return window.db;
+                    if (window.db && typeof window.db.from === 'function') return window.db;
 
-                    // Carrega a lib localmente (tirando dependência de CDN)
+                    // 1) Tenta carregar lib local
                     if (!window.supabase) {
-                        await loadScript('./vendor/supabase.min.js');
+                        try {
+                            await loadScript('./vendor/supabase.min.js');
+                        } catch (e) {
+                            console.warn('⚠️ Falha ao carregar Supabase local:', e?.message || e);
+                        }
+                    }
+
+                    // 2) Valida e tenta fallback para CDN (somente quando online)
+                    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+                        try {
+                            await loadScriptWithFallback(
+                                './vendor/supabase.min.js',
+                                'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js'
+                            );
+                        } catch (e) {
+                            console.warn('⚠️ Falha ao carregar Supabase (fallback CDN):', e?.message || e);
+                        }
+                    }
+
+                    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+                        window.db = null;
+                        return null;
                     }
 
                     window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -7602,7 +7623,7 @@
         initOfflineDB().then(async () => {
             updateOfflineIndicator();
 
-            if (isOnline) {
+            if (isOnline && db && typeof db.from === 'function') {
                 // PERFORMANCE: Só executa sync se houver dados pendentes
                 // Evita operações desnecessárias na inicialização
                 setTimeout(async () => {
@@ -7861,6 +7882,7 @@
 
         // Mapbox initialization
         mapboxgl.accessToken = 'pk.eyJ1IjoiZGFuaWxvYWZrIiwiYSI6ImNtajdra3l0aTA1MXUzZXB2bzByZjVjMXUifQ.RyPdNBII88Qk9xE3j8Rijw';
+        try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapboxgl.setTelemetryEnabled(false); } } catch (e) {}
 
         let map;
         let mapFullyInitialized = false; // Flag para indicar que inicialização completa terminou
@@ -7880,8 +7902,24 @@
         function initMapWithCoords(lat, lng, zoom = 14) {
             locationError.classList.remove('show');
 
+            // // Garante que o container do mapa esteja vazio (Mapbox recomenda)
+            const mapHost = document.getElementById('map');
+            if (mapHost) {
+                // Mantém elementos de overlay fora do canvas do mapa
+                let canvas = document.getElementById('mapCanvas');
+                if (!canvas) {
+                    canvas = document.createElement('div');
+                    canvas.id = 'mapCanvas';
+                    canvas.style.position = 'absolute';
+                    canvas.style.inset = '0';
+                    mapHost.prepend(canvas);
+                } else {
+                    canvas.innerHTML = '';
+                }
+            }
+
             map = new mapboxgl.Map({
-                container: 'map',
+                container: 'mapCanvas',
                 style: 'mapbox://styles/mapbox/streets-v12',
                 center: [lng, lat],
                 zoom: zoom,
@@ -16233,43 +16271,60 @@
 
         // Registrar Service Worker (arquivo externo sw.js)
         async function registerServiceWorker() {
-            if ('serviceWorker' in navigator) {
-                try {
-                    // Registra o arquivo sw.js com caminho relativo (funciona em GitHub Pages, Vercel, Cloudflare, etc.)
-                    const registration = await window.addEventListener('load', ()=>{ try{ navigator.serviceWorker.register('./sw.js', {
-                        scope: './'
-                    }); }catch(e){ console.warn(e);} });
+            if (!('serviceWorker' in navigator)) return;
 
-                    swRegistration = registration;
-                    console.log('✅ Service Worker registrado:', registration.scope);
+            // Evita registrar em contextos onde SW não funciona (ex.: file://)
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+                console.warn('⚠️ Service Worker requer HTTPS (ou localhost).');
+                return;
+            }
 
-                    // Escuta atualizações
-                    registration.addEventListener('updatefound', () => {
-                        const newWorker = registration.installing;
-                        newWorker.addEventListener('statechange', () => {
-                            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                                // Nova versão disponível
-                                showUpdateNotification();
-                            }
-                        });
-                    });
+            try {
+                // Registra após load para evitar corrida com DOM/caches
+                await new Promise(resolve => {
+                    if (document.readyState === 'complete') return resolve();
+                    window.addEventListener('load', resolve, { once: true });
+                });
 
-                    // Escuta mensagens do SW
-                    navigator.serviceWorker.addEventListener('message', event => {
-                        if (event.data.type === 'SYNC_REQUEST') {
-                            // Trigger sync de dados pendentes
-                            if (typeof syncAllPendingData === 'function') {
-                                syncAllPendingData();
-                            }
+                const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+                swRegistration = registration;
+
+                console.log('✅ Service Worker registrado. Scope:', registration?.scope || '(desconhecido)');
+
+                // Atualizações
+                registration.addEventListener('updatefound', () => {
+                    const newWorker = registration.installing;
+                    if (!newWorker) return;
+                    newWorker.addEventListener('statechange', () => {
+                        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                            showUpdateNotification();
                         }
                     });
+                });
 
-                } catch (error) {
-                    console.warn('Service Worker não pôde ser registrado:', error);
-                }
+                // Recarrega quando o novo SW assumir de fato
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    console.log('🔄 Novo Service Worker assumiu controle. Recarregando...');
+                    location.reload();
+                });
+
+                // Escuta mensagens do SW
+                navigator.serviceWorker.addEventListener('message', (event) => {
+                    if (!event?.data) return;
+                    if (event.data.type === 'VERSION') {
+                        console.log('📦 SW version:', event.data.version);
+                    }
+                    if (event.data.type === 'SYNC_REQUEST') {
+                        handleSyncRequest();
+                    }
+                });
+
+            } catch (err) {
+                console.warn('⚠️ Service Worker não pôde ser registrado:', err);
             }
         }
 
+        //
         // Variável para armazenar evento de instalação
         let deferredInstallPrompt = null;
 
