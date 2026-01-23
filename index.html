@@ -7279,8 +7279,7 @@
                     _doSaveRouteMarkersToSupabase(geojson, stats).then(resolve);
                 }, SUPABASE_SAVE_DEBOUNCE);
             });
-        }
-            });
+        });
         }
 
         // Load route markers GeoJSON from Supabase (for cross-device sync)
