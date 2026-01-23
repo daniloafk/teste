@@ -6716,6 +6716,11 @@ function updateRouteMarkersStatus(statusChanges) {
                             setTimeout(check, 50);
                         });
 
+        window.addEventListener('offline', () => {
+            console.log('🔴 Internet caiu — ativando modo offline do mapa...');
+            try { if (typeof setMapOfflineMode === 'function') setMapOfflineMode(true, 'Sem conexão. O mapa pode ficar cinza. Use a lista enquanto estiver offline.'); } catch (e) {}
+        });
+
                         // Step 3a: Atualiza clientes sincronizados (apenas os novos)
                         if (syncResult.syncedClientAddresses.length > 0) {
                             await waitForIdle();
@@ -7916,6 +7921,30 @@ try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapb
 
         let map;
         let mapFullyInitialized = false;
+        let __mapOfflineTriggered__ = false;
+        function __attachMapNetworkGuards__(m) {
+            try {
+                if (!m || m.__netGuardsAttached) return;
+                m.__netGuardsAttached = true;
+                m.on('error', (ev) => {
+                    try {
+                        const err = ev && ev.error;
+                        const status = err && (err.status || err.statusCode);
+                        const msg = String(err && (err.message || err) || '');
+                        if (!navigator.onLine || status === 0 || status === 503 || /Failed to fetch|NetworkError|Load failed|offline/i.test(msg)) {
+                            if (__mapOfflineTriggered__) return;
+                            __mapOfflineTriggered__ = true;
+                            if (typeof setMapOfflineMode === 'function') {
+                                setMapOfflineMode(true, 'Sem conexão. O mapa ficou indisponível. Use a lista e tente novamente quando voltar a internet.');
+                            }
+                            // libera para re-disparar depois de um tempo (evita spam)
+                            setTimeout(() => { __mapOfflineTriggered__ = false; }, 3000);
+                        }
+                    } catch (_) {}
+                });
+            } catch (_) {}
+        }
+
 
         // ========= Recuperação automática do mapa ao voltar a internet (sem F5) =========
         // Guarda o estilo atual usado no Mapbox (capturado do init)
@@ -8095,6 +8124,8 @@ try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapb
                 refreshExpiredTiles: false,         // PERFORMANCE: Não recarrega tiles expirados automaticamente
                 maxParallelImageRequests: 8,        // PERFORMANCE: Limita requisições paralelas
             });
+            try { __attachMapNetworkGuards__(map); } catch (e) {}
+
 
             
             window.map = map;
