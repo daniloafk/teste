@@ -7909,7 +7909,10 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Mapbox initialization
         mapboxgl.accessToken = 'pk.eyJ1IjoiZGFuaWxvYWZrIiwiYSI6ImNtajdra3l0aTA1MXUzZXB2bzByZjVjMXUifQ.RyPdNBII88Qk9xE3j8Rijw';
+        
+        // Desativa telemetria do Mapbox (evita requisições para events.mapbox.com e ruído no console)
         try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapboxgl.setTelemetryEnabled(false); } } catch (e) {}
+try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapboxgl.setTelemetryEnabled(false); } } catch (e) {}
 
         let map;
         let mapFullyInitialized = false;
@@ -8537,7 +8540,7 @@ function updateRouteMarkersStatus(statusChanges) {
         // ============================================
         const mapOfflineOverlay = document.getElementById('mapOfflineOverlay');
         const dismissMapOfflineBtn = document.getElementById('dismissMapOffline');
-        const retryMapOnlineBtn = document.getElementById('retryMapOnline');
+        var retryMapOnlineBtn = document.getElementById('retryMapOnline');
         let mapOfflineDismissed = false;
 
         function setMapOfflineMode(enabled, message) {
@@ -16458,6 +16461,12 @@ function updateRouteMarkersStatus(statusChanges) {
 
                 const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
                 swRegistration = registration;
+
+                // Força checagem imediata por update do SW e loga a versão
+                try { await registration.update(); } catch (e) {}
+                try { if (registration.waiting) { registration.waiting.postMessage('skipWaiting'); } } catch (e) {}
+                try { if (navigator.serviceWorker.controller) { navigator.serviceWorker.controller.postMessage('getVersion'); } } catch (e) {}
+
 
                 console.log('✅ Service Worker registrado. Scope:', registration?.scope || '(desconhecido)');
 
