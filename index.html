@@ -10,121 +10,6 @@
     <meta name="description" content="Mapa interativo para gerenciamento de entregas e rotas">
     <title>Mapa Interativo</title>
 
-<script>
-(function(){
-  const REQUIRED = [
-    "./vendor/mapbox-gl.min.css",
-    "./vendor/mapbox-gl.min.js",
-    "./vendor/xlsx.full.min.js",
-    "./vendor/jsQR.min.js",
-    "./vendor/supabase.min.js"
-  ];
-
-  function qs(id){ return document.getElementById(id); }
-  function setLoaderText(t){
-    const el = document.querySelector('.loader-status');
-    if(el) el.textContent = t;
-  }
-
-  async function probe(url){
-    const res = await fetch(url, { cache: "no-store" });
-    const ct = (res.headers.get("content-type")||"").toLowerCase();
-    let hint = "";
-    if(!res.ok){
-      hint = "HTTP " + res.status;
-      return { url, ok:false, hint, ct };
-    }
-    const text = await res.clone().text();
-    const looksHTML = /<\s*html[\s>]/i.test(text) || /<!doctype\s+html>/i.test(text);
-    if(looksHTML){
-      hint = "Conteúdo HTML (provável 404/sistema do host salvo como arquivo)";
-      return { url, ok:false, hint, ct };
-    }
-    if(url.endsWith(".css") && !ct.includes("text/css")){
-      hint = "Content-Type inesperado: " + (ct || "desconhecido");
-      return { url, ok:true, warn:true, hint, ct };
-    }
-    return { url, ok:true, ct };
-  }
-
-  function showDiag(items, details){
-    const modal = qs("bootDiagnostics");
-    const list = qs("bootDiagList");
-    const det = qs("bootDiagDetails");
-    if(!modal || !list) return;
-
-    list.innerHTML = "";
-    items.forEach(it=>{
-      const li = document.createElement("li");
-      li.textContent = it;
-      list.appendChild(li);
-    });
-
-    if(det && details){
-      det.style.display = "block";
-      det.textContent = details;
-    }
-
-    modal.classList.add("show");
-
-    const cont = qs("bootContinueBtn");
-    const retry = qs("bootRetryBtn");
-    const hard = qs("bootHardReloadBtn");
-
-    if(cont){
-      cont.onclick = ()=>{
-        modal.classList.remove("show");
-        document.body.classList.add("map-offline-mode");
-        const map = document.getElementById("map");
-        if(map) map.style.display = "none";
-        const loader = document.querySelector(".app-loader");
-        if(loader) loader.classList.add("hidden");
-      };
-    }
-    if(retry){ retry.onclick = ()=> location.reload(); }
-    if(hard){
-      hard.onclick = async ()=>{
-        try{
-          if('serviceWorker' in navigator){
-            const regs = await navigator.serviceWorker.getRegistrations();
-            await Promise.all(regs.map(r=>r.unregister()));
-          }
-          if(window.caches){
-            const names = await caches.keys();
-            await Promise.all(names.map(n=>caches.delete(n)));
-          }
-        }catch(e){}
-        location.reload();
-      };
-    }
-  }
-
-  async function runPreflight(){
-    try{
-      setLoaderText("Verificando arquivos locais...");
-      const results = await Promise.all(REQUIRED.map(probe));
-      const missing = results.filter(r=>!r.ok);
-      const warns = results.filter(r=>r.ok && r.warn);
-      if(missing.length){
-        const lines = missing.map(r=> `${r.url} — ${r.hint || "falhou"}`);
-        const warnLines = warns.map(r=> `${r.url} — aviso: ${r.hint}`);
-        const details = JSON.stringify({ missing, warns }, null, 2);
-        showDiag([...lines, ...(warnLines.length?["---"].concat(warnLines):[])], details);
-        return false;
-      }
-      if(warns.length){ console.warn("Boot preflight warnings:", warns); }
-      return true;
-    }catch(err){
-      showDiag(["Falha inesperada na verificação inicial."], String(err && err.stack || err));
-      return false;
-    }
-  }
-
-  window.__BOOT_PREFLIGHT__ = runPreflight;
-})();
-</script>
-
-
     <!-- PWA Web App Manifest (inline) -->
     <script  nonce="5ab9d124b17845e5baff0ba357e" src="//local.adguard.org?ts=1768877512215&amp;type=content-script&amp;dmn=pfst.cf2.poecdn.net&amp;url=https%3A%2F%2Fpfst.cf2.poecdn.net%2Fbase%2Ftext%2F4b28e52924b696dd33739f55507b6bffb8109aad50d5cb7cf4e94484c97bcc1e%3Fpmaid%3D554643253&amp;app=firefox.exe&amp;css=3&amp;js=1&amp;rel=1&amp;rji=1&amp;sbe=1"></script><script  nonce="5ab9d124b17845e5baff0ba357e" src="//local.adguard.org?ts=1768877512215&amp;name=AdGuard%20Extra&amp;name=AdGuard%20Popup%20Blocker&amp;type=user-script"></script><link rel="manifest" href="data:application/json,%7B%22name%22%3A%22Mapa%20de%20Entregas%22%2C%22short_name%22%3A%22Entregas%22%2C%22description%22%3A%22Gerenciamento%20de%20rotas%20e%20entregas%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230f172a%22%2C%22theme_color%22%3A%22%230ea5e9%22%2C%22orientation%22%3A%22portrait-primary%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%2520viewBox%3D%270%25200%2520192%2520192%27%253E%253Crect%2520fill%3D%27%25230ea5e9%27%2520width%3D%27192%27%2520height%3D%27192%27%2520rx%3D%2732%27%2F%253E%253Cpath%2520fill%3D%27white%27%2520d%3D%27M96%252025c-25%25200-45%252020-45%252045c0%252035%252045%252085%252045%252085s45-50%252045-85c0-25-20-45-45-45zm0%252060c-8%25200-15-7-15-15s7-15%252015-15s15%25207%252015%252015s-7%252015-15%252015z%27%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22192x192%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%2C%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%2520viewBox%3D%270%25200%2520512%2520512%27%253E%253Crect%2520fill%3D%27%25230ea5e9%27%2520width%3D%27512%27%2520height%3D%27512%27%2520rx%3D%2764%27%2F%253E%253Cpath%2520fill%3D%27white%27%2520d%3D%27M256%252070c-65%25200-120%252055-120%2520120c0%252090%2520120%2520220%2520120%2520220s120-130%2520120-220c0-65-55-120-120-120zm0%2520160c-22%25200-40-18-40-40s18-40%252040-40s40%252018%252040%252040s-18%252040-40%252040z%27%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22512x512%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%5D%7D">
 
@@ -149,28 +34,9 @@
         @keyframes fadeInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
         @media(prefers-color-scheme:light){.app-loader{background:linear-gradient(135deg,#f8fafc 0%,#e2e8f0 50%,#f8fafc 100%)}.loader-title{color:#1e293b}.loader-status{color:#64748b}.loader-progress{background:rgba(0,0,0,.1)}}
     </style>
-<style>
-
-    /* Boot diagnostics (added) */
-    .boot-diagnostics{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:100000;background:rgba(2,6,23,.75);padding:16px}
-    .boot-diagnostics.show{display:flex}
-    .boot-card{max-width:560px;width:100%;background:var(--surface-light,#fff);color:var(--text-light,#111);border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.35);padding:18px}
-    body.dark .boot-card{background:var(--surface-dark,#1e293b);color:var(--text-dark,#f1f5f9)}
-    .boot-card h3{margin:0 0 8px;font-size:16px;font-weight:800}
-    .boot-card p{margin:0 0 10px;font-size:13px;line-height:1.45;opacity:.9}
-    .boot-list{margin:10px 0 12px;padding-left:18px;font-size:12px;line-height:1.45}
-    .boot-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-    .boot-btn{padding:10px 12px;border:none;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer}
-    .boot-btn.primary{background:var(--primary,#0ea5e9);color:#fff}
-    .boot-btn.secondary{background:rgba(148,163,184,.2);color:inherit}
-    .boot-code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;background:rgba(148,163,184,.15);padding:10px;border-radius:10px;max-height:220px;overflow:auto}
-
-</style>
 
     <!-- Mapbox CSS -->
     <link href="./vendor/mapbox-gl.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.css" rel="stylesheet" media="print" onload="this.media='all'">
-    <noscript><link href="https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.css" rel="stylesheet"></noscript>
 
     <!-- Fontes com preconnect e async loading -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -227,77 +93,6 @@
             height: 100%;
             touch-action: none; /* Let Mapbox handle all touch gestures */
         }
-
-        
-        /* Map Offline Mode (degradação elegante) */
-        body.map-offline-mode #map { filter: grayscale(1); }
-        body.map-offline-mode #map .map-offline-overlay { display: flex; }
-        .map-offline-overlay{
-            position:absolute;
-            inset:0;
-            display:none;
-            align-items:center;
-            justify-content:center;
-            padding:20px;
-            background:rgba(15,23,42,0.55);
-            z-index:50;
-            pointer-events:auto;
-        }
-        body.dark .map-offline-overlay{
-            background:rgba(15,23,42,0.7);
-        }
-        .map-offline-card{
-            width:min(420px, 92vw);
-            background: var(--surface-light);
-            color: var(--text-light);
-            border-radius: 16px;
-            box-shadow: var(--shadow);
-            padding: 18px;
-        }
-        body.dark .map-offline-card{
-            background: var(--surface-dark);
-            color: var(--text-dark);
-        }
-        .map-offline-card h3{
-            font-size:16px;
-            font-weight:700;
-            margin-bottom:8px;
-        }
-        .map-offline-card p{
-            font-size:13px;
-            color: var(--text-muted-light);
-            line-height:1.5;
-            margin-bottom:12px;
-        }
-        body.dark .map-offline-card p{ color: var(--text-muted-dark); }
-        .map-offline-actions{
-            display:flex;
-            gap:10px;
-            justify-content:flex-end;
-        }
-        .map-offline-actions button{
-            padding:10px 14px;
-            border:none;
-            border-radius:10px;
-            font-weight:700;
-            cursor:pointer;
-            font-family:inherit;
-            font-size:13px;
-        }
-        .map-offline-actions .btn-primary{
-            background: var(--primary);
-            color:#fff;
-        }
-        .map-offline-actions .btn-secondary{
-            background: transparent;
-            border:2px solid var(--border-light);
-            color: var(--text-light);
-        }
-        body.dark .map-offline-actions .btn-secondary{
-            border-color: var(--border-dark);
-            color: var(--text-dark);
-        }
-
 
         /* Location Error */
         .location-error {
@@ -4427,37 +4222,6 @@
             /* Ajustes para telas de alta resolução se necessário */
         }
     </style>
-
-<script>
-(function(){
-  const MAX_BOOT_MS = 12000;
-  const t0 = Date.now();
-  const timer = setInterval(()=>{
-    const loader = document.querySelector('.app-loader');
-    if(!loader){ clearInterval(timer); return; }
-    if(loader.classList.contains('hidden')){ clearInterval(timer); return; }
-    if(Date.now() - t0 > MAX_BOOT_MS){
-      if(typeof window.__BOOT_PREFLIGHT__ === 'function'){
-        window.__BOOT_PREFLIGHT__().then(ok=>{
-          if(!ok) return;
-          const modal = document.getElementById('bootDiagnostics');
-          if(modal){
-            const list = document.getElementById('bootDiagList');
-            if(list) list.innerHTML = '<li>Arquivos OK, mas a inicialização não concluiu.</li><li>Abra o Console (F12) para ver o erro específico.</li>';
-            modal.classList.add('show');
-          } else {
-            loader.classList.add('hidden');
-          }
-        });
-      } else {
-        loader.classList.add('hidden');
-      }
-      clearInterval(timer);
-    }
-  }, 400);
-})();
-</script>
-
 </head>
 <body>
     <!-- Loader de inicialização - aparece imediatamente -->
@@ -4481,17 +4245,6 @@
     </div>
 
     <div id="map">
-        <div class="map-offline-overlay" id="mapOfflineOverlay">
-            <div class="map-offline-card">
-                <h3>Mapa indisponível</h3>
-                <p>Sem conexão (ou recursos do mapa indisponíveis). Você ainda pode operar pela lista e marcar entregas normalmente.</p>
-                <div class="map-offline-actions">
-                    <button class="btn-secondary" type="button" id="dismissMapOffline">Continuar</button>
-                    <button class="btn-primary" type="button" id="retryMapOnline">Tentar carregar mapa</button>
-                </div>
-            </div>
-        </div>
-
         <!-- Center Pin for Adjust Mode - inside map container for accurate positioning -->
         <div class="center-pin" id="centerPin">
             <div class="center-pin-marker">
@@ -4882,26 +4635,6 @@
             });
         }
 
-        async function loadScriptWithFallback(primarySrc, fallbackSrc) {
-            try {
-                await loadScript(primarySrc);
-                return { used: 'primary', src: primarySrc };
-            } catch (err) {
-                // Se estiver offline, não há fallback que salve no primeiro carregamento
-                if (!navigator.onLine) throw err;
-
-                if (!fallbackSrc) throw err;
-
-                // Evita tentar fallback se já estiver carregado
-                if (document.querySelector(`script[src="${fallbackSrc}"]`)) {
-                    return { used: 'fallback', src: fallbackSrc };
-                }
-
-                await loadScript(fallbackSrc);
-                return { used: 'fallback', src: fallbackSrc };
-            }
-        }
-
         // Inicialização assíncrona de todos os recursos
         async function initializeApp() {
             try {
@@ -4909,10 +4642,10 @@
 
                 // Carrega scripts em paralelo para maior velocidade
                 await Promise.all([
-                    loadScriptWithFallback('./vendor/mapbox-gl.min.js', 'https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.js'),
-                    (navigator.onLine ? loadScriptWithFallback('./vendor/supabase.min.js', 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js') : Promise.resolve()),
-                    loadScriptWithFallback('./vendor/xlsx.full.min.js', 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'),
-                    loadScriptWithFallback('./vendor/jsQR.min.js', 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js')
+                    loadScript('./vendor/mapbox-gl.min.js'),
+                    loadScript('./vendor/supabase.min.js'),
+                    loadScript('./vendor/xlsx.full.min.js'),
+                    loadScript('./vendor/jsQR.min.js')
                 ]);
 
                 updateLoader('mapbox', 'Preparando mapa...');
@@ -4924,27 +4657,9 @@
                 initApplication();
 
             } catch (error) {
-                console.error('Erro na inicialização:', error);
-
-                const offline = !navigator.onLine;
-                const msgBase = offline
-                    ? 'Sem internet e o app ainda não tem os arquivos necessários em cache.'
-                    : 'Falha ao carregar recursos do app.';
-
-                const vendorHint = 'Verifique se existe a pasta ./vendor com: mapbox-gl.min.js/.css, xlsx.full.min.js, jsQR.min.js e supabase.min.js.';
-                if (loaderStatus) loaderStatus.textContent = msgBase + ' ' + vendorHint;
-
-                // Mostra botão de tentar novamente (sem loop automático)
-                const loaderContent = document.querySelector('.loader-content');
-                if (loaderContent && !document.getElementById('loaderRetryBtn')) {
-                    const btn = document.createElement('button');
-                    btn.id = 'loaderRetryBtn';
-                    btn.className = 'retry-btn';
-                    btn.style.marginTop = '14px';
-                    btn.textContent = 'Tentar novamente';
-                    btn.onclick = () => location.reload();
-                    loaderContent.appendChild(btn);
-                }
+                if (loaderStatus) loaderStatus.textContent = 'Erro ao carregar. Recarregando...';
+                // Tenta recarregar após 2 segundos
+                setTimeout(() => location.reload(), 2000);
             }
         }
 
@@ -4952,58 +4667,13 @@
         initializeApp();
 
         function initApplication() {
-            // Supabase (sync opcional; app funciona sem ele)
+            // Supabase initialization
             const SUPABASE_URL = 'https://wwvftlyvewetspombnky.supabase.co';
             const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind3dmZ0bHl2ZXdldHNwb21ibmt5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNjE5NjYsImV4cCI6MjA4MTkzNzk2Nn0.qvW0QconrSPOWWtB8SNalIpfWhlO2-Oc8LzJURk4zVs';
+            window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            const db = window.db;
 
-            // Inicialmente, desabilita o client (será inicializado sob demanda quando online)
-            window.db = null;
-
-            async function initSupabaseClient() {
-                try {
-                    if (!navigator.onLine) return null;
-                    if (window.db && typeof window.db.from === 'function') return window.db;
-
-                    // 1) Tenta carregar lib local
-                    if (!window.supabase) {
-                        try {
-                            await loadScript('./vendor/supabase.min.js');
-                        } catch (e) {
-                            console.warn('⚠️ Falha ao carregar Supabase local:', e?.message || e);
-                        }
-                    }
-
-                    // 2) Valida e tenta fallback para CDN (somente quando online)
-                    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-                        try {
-                            await loadScriptWithFallback(
-                                './vendor/supabase.min.js',
-                                'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js'
-                            );
-                        } catch (e) {
-                            console.warn('⚠️ Falha ao carregar Supabase (fallback CDN):', e?.message || e);
-                        }
-                    }
-
-                    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-                        window.db = null;
-                        return null;
-                    }
-
-                    window.db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-                    return window.db;
-                } catch (err) {
-                    console.warn('⚠️ Supabase indisponível (continuando offline-first):', err?.message || err);
-                    window.db = null;
-                    return null;
-                }
-            }
-
-            // Expondo para rotinas de sync
-            window.initSupabaseClient = initSupabaseClient;
-
-
-            updateLoader('supabase', navigator.onLine ? 'Sync online disponível' : 'Modo offline (sync desligado)');
+            updateLoader('supabase', 'Conectando banco de dados...');
 
         // ============================================
         // OFFLINE SYSTEM - IndexedDB & Sync
@@ -6312,117 +5982,83 @@
 
         // PERFORMANCE: Atualiza apenas os marcadores de rota que tiveram status alterado
         // Em vez de recarregar todos os marcadores, só atualiza as cores/dados dos afetados
+        function updateRouteMarkersStatus(statusChanges) {
+            if (!map || !map.getSource || !map.getSource('route-stops')) return;
 
-function updateRouteMarkersStatus(statusChanges) {
-    // statusChanges: { delivered:[ids], not_delivered:[ids], pending:[ids] ... }
-    // Os IDs aqui são IDs da tabela "planilha". Cada marcador de rota pode conter vários IDs em properties.ids ("1,2,3").
-    if (!map || !map.getSource || !map.getSource('route-stops')) return;
+            try {
+                const source = map.getSource('route-stops');
+                const currentData = source._data;
+                if (!currentData || !currentData.features) return;
 
-    try {
-        const source = map.getSource('route-stops');
-        const sourceData = source && source._data ? source._data : null;
-        if (!sourceData || !Array.isArray(sourceData.features)) return;
-
-        // Mapa idPlanilha -> novoStatus
-        const idToStatus = {};
-        for (const [status, ids] of Object.entries(statusChanges || {})) {
-            if (!Array.isArray(ids)) continue;
-            for (const id of ids) {
-                const n = parseInt(id);
-                if (!isNaN(n)) idToStatus[n] = status;
-            }
-        }
-        if (Object.keys(idToStatus).length === 0) return;
-
-        let updated = false;
-
-        for (const feature of sourceData.features) {
-            const props = feature && feature.properties ? feature.properties : null;
-            if (!props || !props.ids) continue;
-
-            const ids = String(props.ids)
-                .split(',')
-                .map(s => parseInt(s.trim()))
-                .filter(n => !isNaN(n));
-
-            if (ids.length === 0) continue;
-
-            // Se qualquer ID do marcador mudou, aplica o status (prioridade: delivered / not_delivered > pending)
-            let newStatus = null;
-            for (const id of ids) {
-                if (idToStatus[id] !== undefined) {
-                    newStatus = idToStatus[id];
-                    // Se houver mistura, preferimos finalizar em delivered/not_delivered
-                    if (newStatus === 'delivered' || newStatus === 'not_delivered') break;
+                // Cria mapa de ID -> novo status
+                const idToStatus = {};
+                for (const [status, ids] of Object.entries(statusChanges)) {
+                    for (const id of ids) {
+                        idToStatus[id] = status;
+                    }
                 }
-            }
 
-            if (newStatus === null) continue;
+                // Se não há alterações, retorna
+                if (Object.keys(idToStatus).length === 0) return;
 
-            const oldStatus = props.deliveryStatus || 'pending';
-            if (newStatus === oldStatus) continue;
+                // Atualiza apenas os features afetados
+                let updated = false;
+                const updatedFeatures = currentData.features.map(feature => {
+                    const featureId = feature.properties.id;
+                    if (idToStatus[featureId] !== undefined) {
+                        updated = true;
+                        // Cria novo objeto com status atualizado
+                        return {
+                            ...feature,
+                            properties: {
+                                ...feature.properties,
+                                delivery_status: idToStatus[featureId],
+                                color: idToStatus[featureId] === 'delivered' ? '#10B981' :
+                                       idToStatus[featureId] === 'cancelled' ? '#EF4444' : '#F59E0B'
+                            }
+                        };
+                    }
+                    return feature;
+                });
 
-            updated = true;
-
-            // Marca timestamp para evitar "piscada" com sync remoto
-            lastRouteMarkersSave = Date.now();
-
-            // Atualiza status
-            props.deliveryStatus = newStatus;
-
-            // Recalcula a cor/ícone do marcador conforme a regra original:
-            // - delivered => cinza
-            // - not_delivered => cinza com X
-            // - pending => verde (cadastrado match exato), roxo (cadastrado por similaridade), vermelho (não cadastrado)
-            let newColor;
-            if (newStatus === 'delivered') {
-                newColor = 'gray';
-            } else if (newStatus === 'not_delivered') {
-                newColor = 'gray-x';
-            } else if (props.isRegistered) {
-                newColor = props.matchType === 'exact' ? 'green' : 'purple';
-            } else {
-                newColor = 'red';
-            }
-
-            const pkg = props.packageCount || 1;
-            const newIconName = `pin-${newColor}-${pkg}`;
-            props.icon = newIconName;
-
-            // Garante que o ícone exista
-            if (!map.hasImage(newIconName)) {
-                try {
-                    const { dataUrl, pixelRatio } = generatePinIcon(pkg, newColor);
-                    const img = new Image();
-                    img.onload = () => {
-                        if (!map.hasImage(newIconName)) {
-                            map.addImage(newIconName, img, { pixelRatio });
-                        }
-                        // Re-renderiza para aplicar o ícone recém-adicionado
-                        if (map.getSource('route-stops') && map.getSource('route-stops')._data) {
-                            map.getSource('route-stops').setData(map.getSource('route-stops')._data);
-                        }
+                // Só atualiza o mapa se houve mudanças reais
+                if (updated) {
+                    const newGeojson = {
+                        type: 'FeatureCollection',
+                        features: updatedFeatures
                     };
-                    img.src = dataUrl;
-                } catch (e) {
-                    // falha silenciosa
+                    source.setData(newGeojson);
+
+                    // Also update the cached route markers
+                    try {
+                        const statsToSave = {
+                            total: updatedFeatures.filter(f => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
+                            registered: updatedFeatures.filter(f => f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
+                            unregistered: updatedFeatures.filter(f => !f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
+                            pending: updatedFeatures.reduce((sum, f) => {
+                                if (f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered') {
+                                    return sum + (f.properties.packageCount || 1);
+                                }
+                                return sum;
+                            }, 0),
+                            delivered: updatedFeatures.reduce((sum, f) => {
+                                if (f.properties.deliveryStatus === 'delivered' || f.properties.deliveryStatus === 'not_delivered') {
+                                    return sum + (f.properties.packageCount || 1);
+                                }
+                                return sum;
+                            }, 0)
+                        };
+                        saveRouteMarkersToCache(newGeojson, statsToSave);
+                    } catch (cacheErr) {
+                        // Silently fail - cache update is not critical
+                    }
                 }
+            } catch (err) {
+                // Erro ao atualizar marcadores - falha silenciosa
             }
         }
 
-        if (updated) {
-            // Atualiza o mapa imediatamente e persiste no cache local
-            source.setData(sourceData);
-            updateRouteMarkersCache(sourceData);
-            updateFixedStatsPanel();
-        }
-    } catch (err) {
-        // falha silenciosa
-    }
-}
-
-// PERFORMANCE: Adiciona novos clientes ao cache e marcadores sem recarregar tudo
- e marcadores sem recarregar tudo
+        // PERFORMANCE: Adiciona novos clientes ao cache e marcadores sem recarregar tudo
         async function addSyncedClientsToCache(syncedAddresses) {
             if (!syncedAddresses || syncedAddresses.length === 0) return;
 
@@ -6672,10 +6308,6 @@ function updateRouteMarkersStatus(statusChanges) {
         window.addEventListener('online', () => {
             isOnline = true;
             updateOfflineIndicator();
-            // Se estava em modo mapa-offline, tenta recarregar recursos
-            if (document.body.classList.contains('map-offline-mode')) {
-                tryReloadMap();
-            }
 
             // BLOQUEIO IMEDIATO: Marca timestamp para impedir syncs do servidor
             // de sobrescreverem dados locais antes de enviarmos os pendentes
@@ -6824,7 +6456,6 @@ function updateRouteMarkersStatus(statusChanges) {
         window.addEventListener('offline', () => {
             isOnline = false;
             updateOfflineIndicator();
-            setMapOfflineMode(true, 'Sem conexão. Use a lista para operar e tente novamente quando estiver online.');
             // Stop periodic refresh when offline (to save resources)
             stopPeriodicCacheRefresh();
         });
@@ -7238,9 +6869,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Função interna que realmente salva no Supabase
         async function _doSaveRouteMarkersToSupabase(geojson, stats) {
-            if (!isOnline) return false;
-            if (!window.db) await window.initSupabaseClient?.();
-            if (!window.db) return false;
+            if (!isOnline || !window.db) return false;
             if (isSavingToSupabase) {
                 // Já está salvando, agenda para depois
                 pendingSupabaseSave = { geojson, stats };
@@ -7312,16 +6941,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Save route markers GeoJSON to Supabase (com debounce para atualizações rápidas)
         function saveRouteMarkersToSupabase(geojson, stats) {
-            if (!isOnline) return Promise.resolve(false);
-
-            const ensureDb = () => {
-                if (window.db) return Promise.resolve(window.db);
-                if (window.initSupabaseClient) return window.initSupabaseClient();
-                return Promise.resolve(null);
-            };
-
-            return ensureDb().then((db) => {
-                if (!db) return false;
+            if (!isOnline || !window.db) return Promise.resolve(false);
 
             // Cancela timeout anterior (debounce)
             if (supabaseSaveTimeout) {
@@ -7334,14 +6954,11 @@ function updateRouteMarkersStatus(statusChanges) {
                     _doSaveRouteMarkersToSupabase(geojson, stats).then(resolve);
                 }, SUPABASE_SAVE_DEBOUNCE);
             });
-        });
         }
 
         // Load route markers GeoJSON from Supabase (for cross-device sync)
         async function loadRouteMarkersFromSupabase() {
-            if (!isOnline) return null;
-            if (!window.db) await window.initSupabaseClient?.();
-            if (!window.db) return null;
+            if (!isOnline || !window.db) return null;
 
             try {
                 const { data, error } = await window.db
@@ -7657,7 +7274,7 @@ function updateRouteMarkersStatus(statusChanges) {
         initOfflineDB().then(async () => {
             updateOfflineIndicator();
 
-            if (isOnline && db && typeof db.from === 'function') {
+            if (isOnline) {
                 // PERFORMANCE: Só executa sync se houver dados pendentes
                 // Evita operações desnecessárias na inicialização
                 setTimeout(async () => {
@@ -7916,7 +7533,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Mapbox initialization
         mapboxgl.accessToken = 'pk.eyJ1IjoiZGFuaWxvYWZrIiwiYSI6ImNtajdra3l0aTA1MXUzZXB2bzByZjVjMXUifQ.RyPdNBII88Qk9xE3j8Rijw';
-        try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapboxgl.setTelemetryEnabled(false); } } catch (e) {}
+        try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') mapboxgl.setTelemetryEnabled(false); } catch (e) {}
 
         let map;
         let mapFullyInitialized = false; // Flag para indicar que inicialização completa terminou
@@ -7936,24 +7553,8 @@ function updateRouteMarkersStatus(statusChanges) {
         function initMapWithCoords(lat, lng, zoom = 14) {
             locationError.classList.remove('show');
 
-            // // Garante que o container do mapa esteja vazio (Mapbox recomenda)
-            const mapHost = document.getElementById('map');
-            if (mapHost) {
-                // Mantém elementos de overlay fora do canvas do mapa
-                let canvas = document.getElementById('mapCanvas');
-                if (!canvas) {
-                    canvas = document.createElement('div');
-                    canvas.id = 'mapCanvas';
-                    canvas.style.position = 'absolute';
-                    canvas.style.inset = '0';
-                    mapHost.prepend(canvas);
-                } else {
-                    canvas.innerHTML = '';
-                }
-            }
-
             map = new mapboxgl.Map({
-                container: 'mapCanvas',
+                container: 'map',
                 style: 'mapbox://styles/mapbox/streets-v12',
                 center: [lng, lat],
                 zoom: zoom,
@@ -7972,27 +7573,6 @@ function updateRouteMarkersStatus(statusChanges) {
                 refreshExpiredTiles: false,         // PERFORMANCE: Não recarrega tiles expirados automaticamente
                 maxParallelImageRequests: 8,        // PERFORMANCE: Limita requisições paralelas
             });
-
-            // Modo degradação quando offline/recursos do Mapbox falharem
-            map.on('load', () => {
-                // Se carregou, sai do modo offline
-                setMapOfflineMode(false);
-            });
-
-            map.on('error', (e) => {
-                // Offline ou falha em recursos externos do mapa (tiles/style/glyphs)
-                if (!navigator.onLine) {
-                    setMapOfflineMode(true, 'Sem conexão. Você ainda pode operar pela lista e marcar entregas normalmente.');
-                    return;
-                }
-
-                const msg = (e && e.error && e.error.message) ? e.error.message : '';
-                // Heurística: quando resources do mapa falham, degradar para lista
-                if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('tile') || msg.includes('glyph') || msg.includes('sprite')) {
-                    setMapOfflineMode(true, 'O mapa não conseguiu carregar alguns recursos. Continue pela lista e tente recarregar quando possível.');
-                }
-            });
-
 
             // PERFORMANCE: Desativa collision detection durante interações
             let interactionTimeout = null;
@@ -8409,83 +7989,6 @@ function updateRouteMarkersStatus(statusChanges) {
 
         retryBtn.addEventListener('click', getUserLocationAndInitMap);
         getUserLocationAndInitMap();
-
-        // ============================================
-        // Map: Modo offline (sem travar operação)
-        // ============================================
-        const mapOfflineOverlay = document.getElementById('mapOfflineOverlay');
-        const dismissMapOfflineBtn = document.getElementById('dismissMapOffline');
-        const retryMapOnlineBtn = document.getElementById('retryMapOnline');
-        let mapOfflineDismissed = false;
-
-        function setMapOfflineMode(enabled, message) {
-            if (enabled) {
-                document.body.classList.add('map-offline-mode');
-                if (mapOfflineOverlay) {
-                    const p = mapOfflineOverlay.querySelector('p');
-                    if (p && message) p.textContent = message;
-                    if (!mapOfflineDismissed) mapOfflineOverlay.style.display = '';
-                }
-            } else {
-                document.body.classList.remove('map-offline-mode');
-                if (mapOfflineOverlay) {
-                    mapOfflineOverlay.style.display = 'none';
-                }
-                mapOfflineDismissed = false;
-            }
-        }
-
-        function tryReloadMap() {
-            if (!navigator.onLine) {
-                setMapOfflineMode(true, 'Sem conexão. Use a lista para operar e tente novamente quando estiver online.');
-                return;
-            }
-            // Reabilita overlay (caso tenha sido dispensado) e tenta recarregar
-            mapOfflineDismissed = false;
-            if (mapOfflineOverlay) mapOfflineOverlay.style.display = '';
-
-            try {
-                if (map && typeof map.setStyle === 'function') {
-                    map.setStyle('mapbox://styles/mapbox/streets-v12');
-                    map.resize();
-                } else {
-                    getUserLocationAndInitMap();
-                }
-                // Ao carregar, o handler de 'load' remove o modo offline
-            } catch (err) {
-                setMapOfflineMode(true, 'Não foi possível recarregar o mapa. Continue pela lista e tente novamente.');
-            }
-        }
-
-
-        function warmMapCache() {
-            try {
-                if (!navigator.onLine || !map) return;
-                // Quando o mapa fica idle após um fitBounds, o viewport já solicitou tiles/recursos.
-                map.once('idle', () => {
-                    // Opcional: peça ao SW para cachear a página atual (melhora offline do app shell)
-                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-                        navigator.serviceWorker.controller.postMessage('cacheCurrentPage');
-                    }
-                });
-            } catch (_) {}
-        }
-
-        if (dismissMapOfflineBtn) {
-            dismissMapOfflineBtn.addEventListener('click', () => {
-                mapOfflineDismissed = true;
-                if (mapOfflineOverlay) mapOfflineOverlay.style.display = 'none';
-            });
-        }
-
-        if (retryMapOnlineBtn) {
-            retryMapOnlineBtn.addEventListener('click', tryReloadMap);
-        }
-
-        // Se iniciar offline, já entra no modo degradação
-        if (!navigator.onLine) {
-            setMapOfflineMode(true, 'Sem conexão. Use a lista para operar e tente novamente quando estiver online.');
-        }
 
         // Sidebar functionality
         const menuBtn = document.getElementById('menuBtn');
@@ -11021,7 +10524,6 @@ function updateRouteMarkersStatus(statusChanges) {
                     const bounds = new mapboxgl.LngLatBounds();
                     geojson.features.forEach(f => bounds.extend(f.geometry.coordinates));
                     map.fitBounds(bounds, { padding: 50, maxZoom: 15 });
-                    warmMapCache();
                 }
 
                 // Mostra marcadores de rota
@@ -12796,7 +12298,6 @@ function updateRouteMarkersStatus(statusChanges) {
                     const bounds = new mapboxgl.LngLatBounds();
                     features.forEach(f => bounds.extend(f.geometry.coordinates));
                     map.fitBounds(bounds, { padding: 50, duration: 1500 });
-                    warmMapCache();
                 }
 
                 // PERFORMANCE: Restaurar botão após carregamento com delay para animação
@@ -13432,7 +12933,7 @@ function updateRouteMarkersStatus(statusChanges) {
             // Web Worker para parsing de planilhas XLSX
             // Executa em thread separada para não bloquear a UI
 
-            importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+            importScripts('./vendor/xlsx.full.min.js');
 
             // Helper functions para parsing seguro
             function parseIntSafe(val) {
@@ -16128,7 +15629,6 @@ function updateRouteMarkersStatus(statusChanges) {
                     padding: { top: 80, bottom: 150, left: 50, right: 50 },
                     duration: 1500
                 });
-                warmMapCache();
 
                 // After showing route overview, start tracking with GeolocateControl
                 setTimeout(() => {
@@ -16290,75 +15790,44 @@ function updateRouteMarkersStatus(statusChanges) {
         // PWA - SERVICE WORKER E INSTALAÇÃO
         // ============================================
 
-        // Referência para o registro do Service Worker (para updates controlados)
-        let swRegistration = null;
-        let swRefreshing = false;
-
-        // Recarrega somente quando o novo SW assumir controle
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.addEventListener('controllerchange', () => {
-                if (swRefreshing) return;
-                swRefreshing = true;
-                window.location.reload();
-            });
-        }
-
         // Registrar Service Worker (arquivo externo sw.js)
         async function registerServiceWorker() {
-            if (!('serviceWorker' in navigator)) return;
+            if ('serviceWorker' in navigator) {
+                try {
+                    // Registra o arquivo sw.js com caminho relativo (funciona em GitHub Pages, Vercel, Cloudflare, etc.)
+                    const registration = await navigator.serviceWorker.register('./sw.js', {
+                        scope: './'
+                    });
 
-            // Evita registrar em contextos onde SW não funciona (ex.: file://)
-            if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-                console.warn('⚠️ Service Worker requer HTTPS (ou localhost).');
-                return;
-            }
+                    console.log('✅ Service Worker registrado:', registration.scope);
 
-            try {
-                // Registra após load para evitar corrida com DOM/caches
-                await new Promise(resolve => {
-                    if (document.readyState === 'complete') return resolve();
-                    window.addEventListener('load', resolve, { once: true });
-                });
+                    // Escuta atualizações
+                    registration.addEventListener('updatefound', () => {
+                        const newWorker = registration.installing;
+                        newWorker.addEventListener('statechange', () => {
+                            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                // Nova versão disponível
+                                showUpdateNotification();
+                            }
+                        });
+                    });
 
-                const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
-                swRegistration = registration;
-
-                console.log('✅ Service Worker registrado. Scope:', registration?.scope || '(desconhecido)');
-
-                // Atualizações
-                registration.addEventListener('updatefound', () => {
-                    const newWorker = registration.installing;
-                    if (!newWorker) return;
-                    newWorker.addEventListener('statechange', () => {
-                        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                            showUpdateNotification();
+                    // Escuta mensagens do SW
+                    navigator.serviceWorker.addEventListener('message', event => {
+                        if (event.data.type === 'SYNC_REQUEST') {
+                            // Trigger sync de dados pendentes
+                            if (typeof syncAllPendingData === 'function') {
+                                syncAllPendingData();
+                            }
                         }
                     });
-                });
 
-                // Recarrega quando o novo SW assumir de fato
-                navigator.serviceWorker.addEventListener('controllerchange', () => {
-                    console.log('🔄 Novo Service Worker assumiu controle. Recarregando...');
-                    location.reload();
-                });
-
-                // Escuta mensagens do SW
-                navigator.serviceWorker.addEventListener('message', (event) => {
-                    if (!event?.data) return;
-                    if (event.data.type === 'VERSION') {
-                        console.log('📦 SW version:', event.data.version);
-                    }
-                    if (event.data.type === 'SYNC_REQUEST') {
-                        handleSyncRequest();
-                    }
-                });
-
-            } catch (err) {
-                console.warn('⚠️ Service Worker não pôde ser registrado:', err);
+                } catch (error) {
+                    console.warn('Service Worker não pôde ser registrado:', error);
+                }
             }
         }
 
-        //
         // Variável para armazenar evento de instalação
         let deferredInstallPrompt = null;
 
@@ -16424,43 +15893,16 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Notificação de atualização disponível
         function showUpdateNotification() {
-            // Evita múltiplas notificações empilhadas
-            if (document.getElementById('pwaUpdateNotification')) return;
-
             const notification = document.createElement('div');
-            notification.id = 'pwaUpdateNotification';
             notification.className = 'pwa-update-notification';
             notification.innerHTML = `
                 <div class="pwa-update-content">
                     <span>🔄 Nova versão disponível!</span>
-                    <button id="pwaUpdateNowBtn">Atualizar</button>
-                    <button id="pwaUpdateDismissBtn">✕</button>
+                    <button onclick="location.reload()">Atualizar</button>
+                    <button onclick="this.parentElement.parentElement.remove()">✕</button>
                 </div>
             `;
             document.body.appendChild(notification);
-
-            const btnUpdate = notification.querySelector('#pwaUpdateNowBtn');
-            const btnDismiss = notification.querySelector('#pwaUpdateDismissBtn');
-
-            btnDismiss.addEventListener('click', () => notification.remove());
-
-            btnUpdate.addEventListener('click', async () => {
-                try {
-                    // Atualização controlada: se existir SW esperando, peça para assumir e aguarde controllerchange
-                    if (swRegistration) {
-                        await swRegistration.update().catch(() => {});
-                        if (swRegistration.waiting) {
-                            swRegistration.waiting.postMessage('skipWaiting');
-                            // controllerchange fará o reload
-                            return;
-                        }
-                    }
-                } catch (_) {}
-
-                // Fallback: recarrega normal
-                window.location.reload();
-            });
-
             setTimeout(() => notification.classList.add('visible'), 100);
         }
 
@@ -16472,20 +15914,5 @@ function updateRouteMarkersStatus(statusChanges) {
         }
 
     </script>
-
-<div id="bootDiagnostics" class="boot-diagnostics" role="dialog" aria-modal="true" aria-live="polite">
-  <div class="boot-card">
-    <h3>Não foi possível iniciar o app</h3>
-    <p>O aplicativo não conseguiu carregar um ou mais arquivos essenciais. Isso costuma ocorrer quando algum arquivo em <b>/vendor/</b> está faltando ou foi salvo incorretamente.</p>
-    <ul id="bootDiagList" class="boot-list"></ul>
-    <div id="bootDiagDetails" class="boot-code" style="display:none"></div>
-    <div class="boot-actions">
-      <button class="boot-btn secondary" id="bootContinueBtn" type="button">Continuar sem mapa</button>
-      <button class="boot-btn secondary" id="bootRetryBtn" type="button">Tentar novamente</button>
-      <button class="boot-btn primary" id="bootHardReloadBtn" type="button">Limpar cache e recarregar</button>
-    </div>
-  </div>
-</div>
-
 </body>
 </html>
