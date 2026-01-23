@@ -16433,16 +16433,19 @@ try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapb
         let swRegistration = null;
         let swRefreshing = false;
 
-        // Recarrega somente quando o novo SW assumir controle
+        // Recarrega APENAS em update (evita carregar duas vezes no primeiro install)
         if ('serviceWorker' in navigator) {
+            const hadController = !!navigator.serviceWorker.controller;
+
             navigator.serviceWorker.addEventListener('controllerchange', () => {
+                // Se não havia controller, é o primeiro install: não recarrega.
+                if (!hadController) return;
+
                 if (swRefreshing) return;
                 swRefreshing = true;
                 window.location.reload();
             });
-        }
-
-        // Registrar Service Worker (arquivo externo sw.js)
+        }// Registrar Service Worker (arquivo externo sw.js)
         async function registerServiceWorker() {
             if (!('serviceWorker' in navigator)) return;
 
@@ -16480,13 +16483,6 @@ try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapb
                         }
                     });
                 });
-
-                // Recarrega quando o novo SW assumir de fato
-                navigator.serviceWorker.addEventListener('controllerchange', () => {
-                    console.log('🔄 Novo Service Worker assumiu controle. Recarregando...');
-                    location.reload();
-                });
-
                 // Escuta mensagens do SW
                 navigator.serviceWorker.addEventListener('message', (event) => {
                     if (!event?.data) return;
