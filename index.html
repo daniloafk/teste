@@ -7947,6 +7947,8 @@ function updateRouteMarkersStatus(statusChanges) {
                     try { await loadCachedRouteMarkers(); } catch (e) {}
                 }
 
+                try { if (navigator.onLine && typeof setMapOfflineMode === 'function') setMapOfflineMode(false); } catch (e) {}
+
                 // Se online, puxa/sincroniza
                 if (navigator.onLine) {
                     if (typeof syncRouteMarkersFromSupabase === 'function') {
@@ -7971,6 +7973,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
                 if (!window.map) {
                     await __createOrRecreateMap__();
+                try { if (navigator.onLine && typeof setMapOfflineMode === 'function') setMapOfflineMode(false); } catch (e) {}
                     return;
                 }
 
@@ -8016,6 +8019,7 @@ function updateRouteMarkersStatus(statusChanges) {
                             try { await syncDeliveryStatusFromSupabase(); } catch (e) {}
                         }
 
+                        try { if (typeof setMapOfflineMode === 'function') setMapOfflineMode(false); } catch (e) {}
                         return;
                     } catch (e) {
                         // Se falhar, recria do zero
@@ -8030,6 +8034,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         window.addEventListener('online', () => {
             console.log('🟢 Internet voltou — restaurando mapa...');
+            try { if (typeof setMapOfflineMode === 'function') setMapOfflineMode(false); } catch (e) {}
             __restoreMapAfterOnline__();
         });
 
@@ -8563,7 +8568,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
             try {
                 if (map && typeof map.setStyle === 'function') {
-                    map.setStyle('mapbox://styles/mapbox/streets-v12');
+                    map.setStyle((typeof __MAP_STYLE__ !== 'undefined' && __MAP_STYLE__) ? __MAP_STYLE__ : 'mapbox://styles/mapbox/streets-v12');
                     map.resize();
                 } else {
                     getUserLocationAndInitMap();
