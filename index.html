@@ -5024,6 +5024,7 @@
         // ============================================
         let offlineDB = null;
         let isOnline = navigator.onLine;
+        const dismissMapOfflineBtn = null;
         let isSyncing = false;
         let isSyncingPendingData = false; // Flag para bloquear syncs do servidor durante sync de dados offline
         let lastRouteMarkersSave = 0; // Timestamp do último save local (para proteção contra piscada)
@@ -8529,7 +8530,6 @@ function updateRouteMarkersStatus(statusChanges) {
         // Map: Modo offline (sem travar operação)
         // ============================================
         const mapOfflineOverlay = document.getElementById('mapOfflineOverlay');
-        const dismissMapOfflineBtn = document.getElementById('dismissMapOffline');
         const retryMapOnlineBtn = document.getElementById('retryMapOnline');
         let mapOfflineDismissed = false;
 
@@ -8583,7 +8583,7 @@ function updateRouteMarkersStatus(statusChanges) {
         }
 
         if (dismissMapOfflineBtn) {
-            dismissMapOfflineBtn.addEventListener('click', () => {
+            (document.getElementById('dismissMapOfflineBtn')||null)?.addEventListener('click', () => {
                 mapOfflineDismissed = true;
                 if (mapOfflineOverlay) mapOfflineOverlay.style.display = 'none';
             });
