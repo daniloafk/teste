@@ -151,6 +151,15 @@
     </style>
 <style>
 
+        /* Força desativar aviso/modal de "Mapa indisponível" no modo offline */
+        #locationError, #mapUnavailable, #mapUnavailableModal, .map-unavailable, .offline-map-warning {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+
+
     /* Boot diagnostics (added) */
     .boot-diagnostics{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:100000;background:rgba(2,6,23,.75);padding:16px}
     .boot-diagnostics.show{display:flex}
@@ -5565,7 +5574,7 @@
              */
             clearAll() {
                 this.clearAllPopups();
-                this.clearAllMarkers();
+                this.if (!__preserve__) { clearAllMarkers(); }
                 this.clearAllTimers();
             }
         };
@@ -6669,6 +6678,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Listen for online/offline events
         window.addEventListener('online', () => {
+            window.__preserveMarkersDuringSync__ = true;
             isOnline = true;
             updateOfflineIndicator();
             // Se estava em modo mapa-offline, tenta recarregar recursos
@@ -7443,6 +7453,8 @@ function updateRouteMarkersStatus(statusChanges) {
         const ROUTE_MARKERS_SYNC_INTERVAL = 400; // 400ms (quase tempo real)
 
         async function syncRouteMarkersFromSupabase() {
+            const __preserve__ = !!window.__preserveMarkersDuringSync__;
+
 
             const db = (typeof initSupabaseClient === 'function') ? await initSupabaseClient() : null;
             if (!isOnline || !db || typeof db.from !== 'function' || !map) return;
@@ -7918,6 +7930,7 @@ function updateRouteMarkersStatus(statusChanges) {
         // Guarda o estilo atual usado no Mapbox (capturado do init)
         let __MAP_STYLE__ = 'mapbox://styles/mapbox/streets-v12';
         let __restoringMap__ = false;
+                window.__preserveMarkersDuringSync__ = false;
 
         // Mantém última coordenada conhecida para recriar o mapa sem depender de GPS
         window.lastKnownCoords = window.lastKnownCoords || null;
@@ -8038,6 +8051,23 @@ function updateRouteMarkersStatus(statusChanges) {
             __restoreMapAfterOnline__();
         });
 
+        
+        // Evita "piscar" marcadores ao voltar online: mantém os atuais até o novo GeoJSON chegar
+        window.__preserveMarkersDuringSync__ = true;
+        let __lastRouteGeojsonHash__ = null;
+
+        function __hashRouteGeojson__(geojson) {
+            try {
+                // Hash rápido e estável o suficiente para detectar mudanças sem custo alto
+                const s = JSON.stringify(geojson);
+                let h = 0;
+                for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+                return h.toString(16);
+            } catch (e) {
+                return null;
+            }
+        }
+
         // ========= fim recuperação =========
  // Flag para indicar que inicialização completa terminou
         const locationError = document.getElementById('locationError');
@@ -8054,7 +8084,7 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Initialize map with given coordinates
         function initMapWithCoords(lat, lng, zoom = 14) {
-            locationError.classList.remove('show');
+            /* offline overlay disabled */
 
             // // Garante que o container do mapa esteja vazio (Mapbox recomenda)
             const mapHost = document.getElementById('map');
@@ -10041,7 +10071,14 @@ function updateRouteMarkersStatus(statusChanges) {
                 }))
             };
 
-            // Add source with clustering
+            
+            const __h__ = __hashRouteGeojson__(geojson);
+            if (__h__ && __h__ === __lastRouteGeojsonHash__) {
+                // Nenhuma mudança -> não mexe no mapa (evita piscar)
+                return;
+            }
+            __lastRouteGeojsonHash__ = __h__ || __lastRouteGeojsonHash__;
+// Add source with clustering
             map.addSource('clientes', {
                 type: 'geojson',
                 data: geojson,
@@ -13004,6 +13041,9 @@ function updateRouteMarkersStatus(statusChanges) {
         // Load route markers from cache (fast, skips all calculations)
         // Uses the same popup structure and handlers as loadRouteMarkers
         async function loadCachedRouteMarkers() {
+
+            const __preserve__ = !!window.__preserveMarkersDuringSync__;
+
             try {
                 const cachedData = await getCachedRouteMarkers();
                 if (!cachedData || !cachedData.geojson || !cachedData.geojson.features || cachedData.geojson.features.length === 0) {
