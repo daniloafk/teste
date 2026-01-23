@@ -52,9 +52,7 @@ self.addEventListener('install', event => {
                 // Cacheia a página principal (scope = URL base do app)
                 const mainResponse = await fetch(scope, { cache: 'reload' });
                 if (mainResponse.ok) {
-                    // Salva com múltiplas chaves para garantir que encontre offline
-                    await htmlCache.put(new Request(scope), mainResponse.clone());
-                    await htmlCache.put(new Request(scope + 'index.html'), mainResponse.clone());
+                    // Salva em uma chave canônica (reduz risco de servir HTML antigo)
                     await htmlCache.put('offline-fallback', mainResponse.clone());
                     console.log('✅ HTML cacheado com sucesso:', scope);
                 } else {
@@ -395,8 +393,7 @@ self.addEventListener('message', event => {
                 if (response.ok) {
                     return caches.open(HTML_CACHE_NAME).then(cache => {
                         cache.put('offline-fallback', response.clone());
-                        cache.put(new Request(scope), response);
-                        console.log('📦 Página cacheada via mensagem');
+                                                console.log('📦 Página cacheada via mensagem');
                     });
                 }
             })
