@@ -6312,83 +6312,117 @@
 
         // PERFORMANCE: Atualiza apenas os marcadores de rota que tiveram status alterado
         // Em vez de recarregar todos os marcadores, só atualiza as cores/dados dos afetados
-        function updateRouteMarkersStatus(statusChanges) {
-            if (!map || !map.getSource || !map.getSource('route-stops')) return;
 
-            try {
-                const source = map.getSource('route-stops');
-                const currentData = source._data;
-                if (!currentData || !currentData.features) return;
+function updateRouteMarkersStatus(statusChanges) {
+    // statusChanges: { delivered:[ids], not_delivered:[ids], pending:[ids] ... }
+    // Os IDs aqui são IDs da tabela "planilha". Cada marcador de rota pode conter vários IDs em properties.ids ("1,2,3").
+    if (!map || !map.getSource || !map.getSource('route-stops')) return;
 
-                // Cria mapa de ID -> novo status
-                const idToStatus = {};
-                for (const [status, ids] of Object.entries(statusChanges)) {
-                    for (const id of ids) {
-                        idToStatus[id] = status;
-                    }
+    try {
+        const source = map.getSource('route-stops');
+        const sourceData = source && source._data ? source._data : null;
+        if (!sourceData || !Array.isArray(sourceData.features)) return;
+
+        // Mapa idPlanilha -> novoStatus
+        const idToStatus = {};
+        for (const [status, ids] of Object.entries(statusChanges || {})) {
+            if (!Array.isArray(ids)) continue;
+            for (const id of ids) {
+                const n = parseInt(id);
+                if (!isNaN(n)) idToStatus[n] = status;
+            }
+        }
+        if (Object.keys(idToStatus).length === 0) return;
+
+        let updated = false;
+
+        for (const feature of sourceData.features) {
+            const props = feature && feature.properties ? feature.properties : null;
+            if (!props || !props.ids) continue;
+
+            const ids = String(props.ids)
+                .split(',')
+                .map(s => parseInt(s.trim()))
+                .filter(n => !isNaN(n));
+
+            if (ids.length === 0) continue;
+
+            // Se qualquer ID do marcador mudou, aplica o status (prioridade: delivered / not_delivered > pending)
+            let newStatus = null;
+            for (const id of ids) {
+                if (idToStatus[id] !== undefined) {
+                    newStatus = idToStatus[id];
+                    // Se houver mistura, preferimos finalizar em delivered/not_delivered
+                    if (newStatus === 'delivered' || newStatus === 'not_delivered') break;
                 }
+            }
 
-                // Se não há alterações, retorna
-                if (Object.keys(idToStatus).length === 0) return;
+            if (newStatus === null) continue;
 
-                // Atualiza apenas os features afetados
-                let updated = false;
-                const updatedFeatures = currentData.features.map(feature => {
-                    const featureId = feature.properties.id;
-                    if (idToStatus[featureId] !== undefined) {
-                        updated = true;
-                        // Cria novo objeto com status atualizado
-                        return {
-                            ...feature,
-                            properties: {
-                                ...feature.properties,
-                                delivery_status: idToStatus[featureId],
-                                color: idToStatus[featureId] === 'delivered' ? '#10B981' :
-                                       idToStatus[featureId] === 'cancelled' ? '#EF4444' : '#F59E0B'
-                            }
-                        };
-                    }
-                    return feature;
-                });
+            const oldStatus = props.deliveryStatus || 'pending';
+            if (newStatus === oldStatus) continue;
 
-                // Só atualiza o mapa se houve mudanças reais
-                if (updated) {
-                    const newGeojson = {
-                        type: 'FeatureCollection',
-                        features: updatedFeatures
+            updated = true;
+
+            // Marca timestamp para evitar "piscada" com sync remoto
+            lastRouteMarkersSave = Date.now();
+
+            // Atualiza status
+            props.deliveryStatus = newStatus;
+
+            // Recalcula a cor/ícone do marcador conforme a regra original:
+            // - delivered => cinza
+            // - not_delivered => cinza com X
+            // - pending => verde (cadastrado match exato), roxo (cadastrado por similaridade), vermelho (não cadastrado)
+            let newColor;
+            if (newStatus === 'delivered') {
+                newColor = 'gray';
+            } else if (newStatus === 'not_delivered') {
+                newColor = 'gray-x';
+            } else if (props.isRegistered) {
+                newColor = props.matchType === 'exact' ? 'green' : 'purple';
+            } else {
+                newColor = 'red';
+            }
+
+            const pkg = props.packageCount || 1;
+            const newIconName = `pin-${newColor}-${pkg}`;
+            props.icon = newIconName;
+
+            // Garante que o ícone exista
+            if (!map.hasImage(newIconName)) {
+                try {
+                    const { dataUrl, pixelRatio } = generatePinIcon(pkg, newColor);
+                    const img = new Image();
+                    img.onload = () => {
+                        if (!map.hasImage(newIconName)) {
+                            map.addImage(newIconName, img, { pixelRatio });
+                        }
+                        // Re-renderiza para aplicar o ícone recém-adicionado
+                        if (map.getSource('route-stops') && map.getSource('route-stops')._data) {
+                            map.getSource('route-stops').setData(map.getSource('route-stops')._data);
+                        }
                     };
-                    source.setData(newGeojson);
-
-                    // Also update the cached route markers
-                    try {
-                        const statsToSave = {
-                            total: updatedFeatures.filter(f => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
-                            registered: updatedFeatures.filter(f => f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
-                            unregistered: updatedFeatures.filter(f => !f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
-                            pending: updatedFeatures.reduce((sum, f) => {
-                                if (f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered') {
-                                    return sum + (f.properties.packageCount || 1);
-                                }
-                                return sum;
-                            }, 0),
-                            delivered: updatedFeatures.reduce((sum, f) => {
-                                if (f.properties.deliveryStatus === 'delivered' || f.properties.deliveryStatus === 'not_delivered') {
-                                    return sum + (f.properties.packageCount || 1);
-                                }
-                                return sum;
-                            }, 0)
-                        };
-                        saveRouteMarkersToCache(newGeojson, statsToSave);
-                    } catch (cacheErr) {
-                        // Silently fail - cache update is not critical
-                    }
+                    img.src = dataUrl;
+                } catch (e) {
+                    // falha silenciosa
                 }
-            } catch (err) {
-                // Erro ao atualizar marcadores - falha silenciosa
             }
         }
 
-        // PERFORMANCE: Adiciona novos clientes ao cache e marcadores sem recarregar tudo
+        if (updated) {
+            // Atualiza o mapa imediatamente e persiste no cache local
+            source.setData(sourceData);
+            updateRouteMarkersCache(sourceData);
+            updateFixedStatsPanel();
+        }
+    } catch (err) {
+        // falha silenciosa
+    }
+}
+
+// PERFORMANCE: Adiciona novos clientes ao cache e marcadores sem recarregar tudo
+ e marcadores sem recarregar tudo
         async function addSyncedClientsToCache(syncedAddresses) {
             if (!syncedAddresses || syncedAddresses.length === 0) return;
 
