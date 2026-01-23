@@ -8520,6 +8520,13 @@ function updateRouteMarkersStatus(statusChanges) {
 
         // Load clientes from Supabase with persistent caching
         async function loadClientes() {
+
+            // Supabase é opcional: se não estiver disponível, seguimos com cache local (offline-first)
+            const db = (typeof initSupabaseClient === 'function') ? await initSupabaseClient() : null;
+            if (isOnline && !db) {
+                console.warn('⚠️ Supabase indisponível: carregando clientes do cache local.');
+            }
+
             loadingState.style.display = 'block';
             emptyState.style.display = 'none';
             clienteList.style.display = 'none';
@@ -8535,7 +8542,7 @@ function updateRouteMarkersStatus(statusChanges) {
                 }
 
                 // Try to fetch fresh data if online
-                if (isOnline) {
+                if (isOnline && db && typeof db.from === 'function') {
                     // Busca todos os clientes usando paginação (Supabase limita a 1000 por padrão)
                     let allData = [];
                     let from = 0;
