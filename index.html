@@ -148,7 +148,17 @@
         @keyframes spin{to{transform:rotate(360deg)}}
         @keyframes fadeInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
         @media(prefers-color-scheme:light){.app-loader{background:linear-gradient(135deg,#f8fafc 0%,#e2e8f0 50%,#f8fafc 100%)}.loader-title{color:#1e293b}.loader-status{color:#64748b}.loader-progress{background:rgba(0,0,0,.1)}}
-    </style>
+    
+        /* Offline area download (Mapbox tiles) */
+        .offline-area-box{padding:12px 16px;border-top:1px solid rgba(255,255,255,0.08);border-bottom:1px solid rgba(255,255,255,0.08)}
+        .offline-area-btn{width:100%;padding:10px 12px;border:0;border-radius:10px;cursor:pointer;font-weight:600}
+        .offline-area-progress{margin-top:10px}
+        .offline-area-progress-text{font-size:13px;opacity:0.9;margin-bottom:8px}
+        .offline-area-progress-bar{height:10px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden}
+        .offline-area-progress-fill{height:100%;border-radius:999px;background:rgba(255,255,255,0.55)}
+        .offline-area-progress-hint{font-size:12px;opacity:0.75;margin-top:8px}
+
+</style>
 <style>
 
     /* Boot diagnostics (added) */
@@ -4805,6 +4815,21 @@
             </div>
         </div>
 
+        <div class="offline-area-box" id="offlineAreaBox">
+            <button class="offline-area-btn" id="downloadMosqueiroBtn" type="button">
+                Baixar mapa offline (Ilha do Mosqueiro)
+            </button>
+            <div class="offline-area-progress" id="downloadMosqueiroProgress" style="display:none;">
+                <div class="offline-area-progress-text" id="downloadMosqueiroProgressText">Preparando…</div>
+                <div class="offline-area-progress-bar">
+                    <div class="offline-area-progress-fill" id="downloadMosqueiroProgressFill" style="width:0%"></div>
+                </div>
+                <div class="offline-area-progress-hint" id="downloadMosqueiroProgressHint">
+                    Dica: quanto maior o zoom, mais dados. Recomendado: 12–15.
+                </div>
+            </div>
+        </div>
+
         <div class="sidebar-content" id="sidebarContent">
             <!-- Loading State -->
             <div class="loading" id="loadingState">
@@ -8626,6 +8651,152 @@ try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapb
                 });
             } catch (_) {}
         }
+
+
+        // ============================================
+        // OFFLINE MAP AREA (prefetch tiles) - Mosqueiro
+        // ============================================
+        // BBox aproximado da Ilha do Mosqueiro (WGS84): (S,W) (-1.22725, -48.47427) / (N,E) (-1.05560, -48.31008)
+        // Fonte: topographic-map.com (Ilha do Mosqueiro) / bounds exibidos na página.
+        const MOSQUEIRO_BBOX = { west: -48.47427, south: -1.22725, east: -48.31008, north: -1.05560 };
+
+        function __lon2tileX__(lon, z) {
+            return Math.floor(((lon + 180) / 360) * Math.pow(2, z));
+        }
+        function __lat2tileY__(lat, z) {
+            const rad = lat * Math.PI / 180;
+            const n = Math.tan(Math.PI / 4 + rad / 2);
+            return Math.floor((1 - Math.log(n) / Math.PI) / 2 * Math.pow(2, z));
+        }
+
+        function __getTileTemplatesFromStyle__(style) {
+            const templates = new Set();
+            if (!style || !style.sources) return templates;
+            for (const key of Object.keys(style.sources)) {
+                const s = style.sources[key];
+                if (s && Array.isArray(s.tiles)) {
+                    for (const t of s.tiles) {
+                        if (typeof t === 'string' && t.includes('{z}') && t.includes('{x}') && t.includes('{y}')) {
+                            templates.add(t);
+                        }
+                    }
+                }
+            }
+            return templates;
+        }
+
+        async function prefetchMosqueiroTiles({ zoomMin = 12, zoomMax = 15 } = {}) {
+            if (!navigator.onLine) {
+                alert('Você precisa estar online para baixar a área offline.');
+                return;
+            }
+            if (!window.map || typeof window.map.getStyle !== 'function') {
+                alert('O mapa ainda não está pronto. Aguarde carregar e tente novamente.');
+                return;
+            }
+            if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
+                alert('Service Worker ainda não está controlando a página. Recarregue a página e tente novamente.');
+                return;
+            }
+
+            const btn = document.getElementById('downloadMosqueiroBtn');
+            const box = document.getElementById('downloadMosqueiroProgress');
+            const txt = document.getElementById('downloadMosqueiroProgressText');
+            const fill = document.getElementById('downloadMosqueiroProgressFill');
+            const hint = document.getElementById('downloadMosqueiroProgressHint');
+
+            if (btn) btn.disabled = true;
+            if (box) box.style.display = 'block';
+            if (txt) txt.textContent = 'Calculando tiles para Mosqueiro…';
+            if (fill) fill.style.width = '0%';
+            if (hint) hint.textContent = `Zoom ${zoomMin}–${zoomMax}. Isso pode demorar e consumir dados.`;
+
+            // Garante que o mapa realmente passou por load/idle (isso força baixar style/sprites/glyphs online)
+            try {
+                await new Promise((resolve) => {
+                    if (!window.map) return resolve();
+                    window.map.once('idle', resolve);
+                    setTimeout(resolve, 2500);
+                });
+            } catch (_) {}
+
+            const style = window.map.getStyle();
+            const templates = Array.from(__getTileTemplatesFromStyle__(style));
+            if (!templates.length) {
+                if (txt) txt.textContent = 'Não encontrei templates de tiles no estilo atual.';
+                if (btn) btn.disabled = false;
+                return;
+            }
+
+            const urls = [];
+            for (let z = zoomMin; z <= zoomMax; z++) {
+                const xMin = __lon2tileX__(MOSQUEIRO_BBOX.west, z);
+                const xMax = __lon2tileX__(MOSQUEIRO_BBOX.east, z);
+                const yMin = __lat2tileY__(MOSQUEIRO_BBOX.north, z);
+                const yMax = __lat2tileY__(MOSQUEIRO_BBOX.south, z);
+
+                for (let x = xMin; x <= xMax; x++) {
+                    for (let y = yMin; y <= yMax; y++) {
+                        for (const t of templates) {
+                            urls.push(t.replace('{z}', z).replace('{x}', x).replace('{y}', y));
+                        }
+                    }
+                }
+            }
+
+            // Hard cap: evita travar o navegador em áreas/zooms muito grandes
+            const HARD_CAP = 6000;
+            let finalUrls = urls;
+            if (urls.length > HARD_CAP) {
+                finalUrls = urls.slice(0, HARD_CAP);
+                if (txt) txt.textContent = `Área grande demais (${urls.length} URLs). Limitando a ${HARD_CAP}. Reduza o zoom para baixar tudo.`;
+            } else {
+                if (txt) txt.textContent = `Baixando ${urls.length} recursos para offline…`;
+            }
+
+            // Envia em blocos para o SW
+            const CHUNK = 150;
+            let sent = 0;
+
+            const waitDone = () => new Promise((resolve) => {
+                const onMsg = (ev) => {
+                    if (ev && ev.data && ev.data.type === 'PREFETCH_DONE') {
+                        navigator.serviceWorker.removeEventListener('message', onMsg);
+                        resolve(ev.data);
+                    }
+                };
+                navigator.serviceWorker.addEventListener('message', onMsg);
+                // fallback
+                setTimeout(() => {
+                    navigator.serviceWorker.removeEventListener('message', onMsg);
+                    resolve(null);
+                }, 120000);
+            });
+
+            for (let i = 0; i < finalUrls.length; i += CHUNK) {
+                const chunk = finalUrls.slice(i, i + CHUNK);
+                sent += chunk.length;
+
+                if (txt) txt.textContent = `Baixando… (${sent}/${finalUrls.length})`;
+                if (fill) fill.style.width = `${Math.min(100, Math.round((sent / finalUrls.length) * 100))}%`;
+
+                navigator.serviceWorker.controller.postMessage({ type: 'PREFETCH_URLS', urls: chunk });
+                await waitDone();
+                // Pequeno respiro para evitar saturar o browser
+                await new Promise(r => setTimeout(r, 120));
+            }
+
+            if (txt) txt.textContent = 'Concluído. Mosqueiro disponível offline (na área baixada).';
+            if (fill) fill.style.width = '100%';
+            if (btn) btn.disabled = false;
+        }
+
+        // Wire UI
+        (function bindOfflineAreaButton(){
+            const btn = document.getElementById('downloadMosqueiroBtn');
+            if (!btn) return;
+            btn.addEventListener('click', () => prefetchMosqueiroTiles({ zoomMin: 12, zoomMax: 15 }));
+        })();
 
         if (dismissMapOfflineBtn) {
             dismissMapOfflineBtn.addEventListener('click', () => {
