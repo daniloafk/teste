@@ -7912,7 +7912,129 @@ function updateRouteMarkersStatus(statusChanges) {
         try { if (mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') { mapboxgl.setTelemetryEnabled(false); } } catch (e) {}
 
         let map;
-        let mapFullyInitialized = false; // Flag para indicar que inicialização completa terminou
+        let mapFullyInitialized = false;
+
+        // ========= Recuperação automática do mapa ao voltar a internet (sem F5) =========
+        // Guarda o estilo atual usado no Mapbox (capturado do init)
+        let __MAP_STYLE__ = 'mapbox://styles/mapbox/streets-v12';
+        let __restoringMap__ = false;
+
+        // Mantém última coordenada conhecida para recriar o mapa sem depender de GPS
+        window.lastKnownCoords = window.lastKnownCoords || null;
+
+        function __rememberCoords__(lat, lng) {
+            if (typeof lat === 'number' && typeof lng === 'number' && isFinite(lat) && isFinite(lng)) {
+                window.lastKnownCoords = { lat, lng, ts: Date.now() };
+            }
+        }
+
+        async function __createOrRecreateMap__() {
+            try {
+                if (window.map) {
+                    try { window.map.remove(); } catch (e) {}
+                    window.map = null;
+                }
+
+                // Prioridade: recriar com última coordenada conhecida (evita depender do GPS imediatamente)
+                if (window.lastKnownCoords && typeof initMapWithCoords === 'function') {
+                    await initMapWithCoords(window.lastKnownCoords.lat, window.lastKnownCoords.lng);
+                } else if (typeof getUserLocationAndInitMap === 'function') {
+                    await getUserLocationAndInitMap();
+                }
+
+                // Re-renderiza do cache local (offline-first)
+                if (typeof loadCachedRouteMarkers === 'function') {
+                    try { await loadCachedRouteMarkers(); } catch (e) {}
+                }
+
+                // Se online, puxa/sincroniza
+                if (navigator.onLine) {
+                    if (typeof syncRouteMarkersFromSupabase === 'function') {
+                        try { await syncRouteMarkersFromSupabase(); } catch (e) {}
+                    }
+                    if (typeof syncDeliveryStatusFromSupabase === 'function') {
+                        try { await syncDeliveryStatusFromSupabase(); } catch (e) {}
+                    }
+                }
+            } catch (e) {
+                console.warn('⚠️ Falha ao recriar mapa:', e);
+            }
+        }
+
+        async function __restoreMapAfterOnline__() {
+            if (__restoringMap__) return;
+            __restoringMap__ = true;
+
+            try {
+                // Pequeno atraso para a rede estabilizar (principalmente no celular)
+                await new Promise(r => setTimeout(r, 800));
+
+                if (!window.map) {
+                    await __createOrRecreateMap__();
+                    return;
+                }
+
+                // Força reflow / redraw do canvas
+                try { window.map.resize(); } catch (e) {}
+
+                // Tenta recarregar o estilo para rebaixar sprites/glyphs/tiles
+                if (window.map && typeof window.map.setStyle === 'function') {
+                    try {
+                        window.map.setStyle(__MAP_STYLE__);
+
+                        // Aguarda o style começar a carregar
+                        await new Promise((resolve, reject) => {
+                            const t = setTimeout(() => reject(new Error('timeout style')), 8000);
+
+                            function done() {
+                                clearTimeout(t);
+                                cleanup();
+                                resolve();
+                            }
+                            function fail(ev) {
+                                clearTimeout(t);
+                                cleanup();
+                                reject(ev?.error || new Error('style error'));
+                            }
+                            function cleanup() {
+                                try { window.map.off('styledata', done); } catch (e) {}
+                                try { window.map.off('error', fail); } catch (e) {}
+                            }
+
+                            try { window.map.on('styledata', done); } catch (e) { done(); }
+                            try { window.map.on('error', fail); } catch (e) {}
+                        });
+
+                        // Re-renderiza marcadores e sincroniza
+                        if (typeof loadCachedRouteMarkers === 'function') {
+                            try { await loadCachedRouteMarkers(); } catch (e) {}
+                        }
+                        if (typeof syncRouteMarkersFromSupabase === 'function') {
+                            try { await syncRouteMarkersFromSupabase(); } catch (e) {}
+                        }
+                        if (typeof syncDeliveryStatusFromSupabase === 'function') {
+                            try { await syncDeliveryStatusFromSupabase(); } catch (e) {}
+                        }
+
+                        return;
+                    } catch (e) {
+                        // Se falhar, recria do zero
+                    }
+                }
+
+                await __createOrRecreateMap__();
+            } finally {
+                __restoringMap__ = false;
+            }
+        }
+
+        window.addEventListener('online', () => {
+            console.log('🟢 Internet voltou — restaurando mapa...');
+            __restoreMapAfterOnline__();
+        });
+
+        // ========= fim recuperação =========
+ // Flag para indicar que inicialização completa terminou
         const locationError = document.getElementById('locationError');
         const errorMessage = document.getElementById('errorMessage');
         const retryBtn = document.getElementById('retryBtn');
@@ -7966,7 +8088,9 @@ function updateRouteMarkersStatus(statusChanges) {
                 maxParallelImageRequests: 8,        // PERFORMANCE: Limita requisições paralelas
             });
 
-            // Modo degradação quando offline/recursos do Mapbox falharem
+            
+            window.map = map;
+// Modo degradação quando offline/recursos do Mapbox falharem
             map.on('load', () => {
                 // Se carregou, sai do modo offline
                 setMapOfflineMode(false);
