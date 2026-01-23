@@ -18,6 +18,14 @@
         // Modal "mapa indisponível" removido; mantemos a variável para compatibilidade com código antigo
         var dismissMapOfflineBtn = null;
 
+        // Compatibilidade: botões/estados do antigo modal offline (modal removido)
+        var retryMapOnlineBtn = null;
+
+        // Estado de carregamento usado por rotinas (evita TDZ de "let loadingState" em handlers)
+        var loadingState = window.loadingState || { clientes: { loading: false, lastError: null } };
+        window.loadingState = loadingState;
+
+
         function __isPreserveEnabled__(){ return !!window.__preserveMarkersDuringSync__; }
 
 (function(){
@@ -8588,10 +8596,7 @@ function updateRouteMarkersStatus(statusChanges) {
             } catch (_) {}
         }
         /* listener do botão de modal offline removido (modal desativado) */
-        if (retryMapOnlineBtn) {
-            retryMapOnlineBtn.addEventListener('click', tryReloadMap);
-        }
-
+        /* listener do botão retry do modal offline removido (modal desativado) */
         // Se iniciar offline, já entra no modo degradação
         if (!navigator.onLine) {
             setMapOfflineMode(true, 'Sem conexão. Use a lista para operar e tente novamente quando estiver online.');
@@ -8604,7 +8609,7 @@ function updateRouteMarkersStatus(statusChanges) {
         const closeBtn = document.getElementById('closeBtn');
         const clienteList = document.getElementById('clienteList');
         const emptyState = document.getElementById('emptyState');
-        const loadingState = document.getElementById('loadingState');
+        var loadingState = document.getElementById('loadingState');
         const clienteCount = document.getElementById('clienteCount');
         const toggleMarkersBtn = document.getElementById('toggleMarkersBtn');
         const searchInput = document.getElementById('searchInput');
