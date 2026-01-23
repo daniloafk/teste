@@ -168,6 +168,15 @@ async function getOfflineHTML(request) {
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
 
+
+    // Bloqueia telemetria do Mapbox (não afeta o carregamento do mapa)
+    // Evita ruído no console e requisições desnecessárias.
+    if (url.hostname === 'events.mapbox.com') {
+        event.respondWith(new Response('', { status: 204 }));
+        return;
+    }
+
+
     // Ignora requisições não-GET
     if (event.request.method !== 'GET') return;
 
