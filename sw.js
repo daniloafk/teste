@@ -470,9 +470,6 @@ self.addEventListener('fetch', event => {
         return;
     }
 
-return;
-    }
-
     // CDN assets (fonts, scripts) - cache-first
     if (url.hostname.includes('cdn.jsdelivr.net') ||
         url.hostname.includes('cdnjs.cloudflare.com') ||
