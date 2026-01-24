@@ -7552,6 +7552,17 @@
         function initMapWithCoords(lat, lng, zoom = 14) {
             locationError.classList.remove('show');
 
+            // Garantir container vazio (evita aviso do Mapbox e melhora interatividade)
+            const mapEl = document.getElementById('map');
+            if (mapEl) mapEl.innerHTML = '';
+
+            // Desabilitar telemetria do Mapbox (evita requests para events.mapbox.com)
+            try {
+                if (window.mapboxgl && typeof mapboxgl.setTelemetryEnabled === 'function') {
+                    mapboxgl.setTelemetryEnabled(false);
+                }
+            } catch (e) { /* noop */ }
+
             map = new mapboxgl.Map({
                 container: 'map',
                 style: 'mapbox://styles/mapbox/streets-v12',
