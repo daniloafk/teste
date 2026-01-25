@@ -11055,8 +11055,15 @@
                 function extractStreetNameWords(addr) {
                     if (!addr) return [];
 
-                    // Normalize the address
-                    let text = addr
+                    // STEP 1: Protect highway codes BEFORE processing
+                    // Converts "PA-391", "BR-316", "PA 391" etc. to "pa391", "br316"
+                    let text = addr.replace(
+                        /\b(pa|br|go|mg|sp|rj|rs|pr|sc|ba|ce|pe|ma|pi|mt|ms|to|am|ac|ro|rr|ap|se|al|rn|pb|es|df)\s*[-]?\s*(\d{1,4})\b/gi,
+                        (match, state, num) => `${state.toLowerCase()}${num}`
+                    );
+
+                    // STEP 2: Normalize the address
+                    text = text
                         .toLowerCase()
                         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
                         .replace(/[.,;:\-\/\\()]/g, ' ') // Replace punctuation
@@ -11088,7 +11095,7 @@
                         .filter(w => {
                             // Must be at least 3 characters
                             if (w.length < 3) return false;
-                            // Must not be a number
+                            // Must not be a pure number (but allow alphanumeric like "pa391")
                             if (/^\d+$/.test(w)) return false;
                             // Must not be in exclude list
                             if (excludeWords.has(w)) return false;
