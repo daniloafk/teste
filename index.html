@@ -8870,18 +8870,28 @@
 
                     if (isMatch) {
                         foundExisting = true;
-                        // Atualiza tanto marcadores não registrados (vermelho) quanto marcadores de similaridade (roxo)
-                        if (!props.isRegistered || props.matchType === 'similarity') {
+
+                        // Verifica se as coordenadas mudaram (para marcadores já verdes que precisam de atualização)
+                        const currentCoords = feature.geometry.coordinates;
+                        const coordsChanged = currentCoords[0] !== clientData.longitude ||
+                                              currentCoords[1] !== clientData.latitude;
+
+                        // Atualiza marcadores em 3 casos:
+                        // 1. Não registrados (vermelho) - cadastro novo
+                        // 2. Similaridade (roxo) - confirmação de match
+                        // 3. Já registrados (verde) mas com coordenadas diferentes - AJUSTE DE POSIÇÃO
+                        if (!props.isRegistered || props.matchType === 'similarity' || coordsChanged) {
                             updated = true;
                             const packageCount = props.packageCount || 1;
                             const newIconId = `pin-green-${packageCount}`;
                             iconsToGenerate.add(newIconId);
 
                             // Salva dados originais para permitir reversão após exclusão do cliente
-                            const previousMatchType = props.matchType || null;
-                            const previousMatchedClientAddress = props.matchedClientAddress || '';
-                            const previousCoordinates = feature.geometry.coordinates;
-                            const previousIsRegistered = props.isRegistered || false;
+                            // IMPORTANTE: Só salva previousCoordinates se ainda não existe (evita sobrescrever o original)
+                            const previousMatchType = props.previousMatchType || props.matchType || null;
+                            const previousMatchedClientAddress = props.previousMatchedClientAddress || props.matchedClientAddress || '';
+                            const previousCoordinates = props.previousCoordinates || JSON.stringify(currentCoords);
+                            const previousIsRegistered = props.previousIsRegistered !== undefined ? props.previousIsRegistered : (props.isRegistered || false);
 
                             return {
                                 ...feature,
@@ -8896,10 +8906,10 @@
                                     icon: newIconId,
                                     latitude: clientData.latitude,
                                     longitude: clientData.longitude,
-                                    // Salva estado anterior para reversão
+                                    // Salva estado anterior para reversão (preserva o original)
                                     previousMatchType: previousMatchType,
                                     previousMatchedClientAddress: previousMatchedClientAddress,
-                                    previousCoordinates: JSON.stringify(previousCoordinates),
+                                    previousCoordinates: previousCoordinates,
                                     previousIsRegistered: previousIsRegistered
                                 }
                             };
