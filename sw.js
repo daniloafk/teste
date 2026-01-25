@@ -1,15 +1,19 @@
-// Service Worker - Mapa de Entregas v7 (Mapbox, XLSX, jsQR, Fonts inline)
-const CACHE_NAME = 'mapa-entregas-v7';
+// Service Worker - Mapa de Entregas v5
+const CACHE_NAME = 'mapa-entregas-v5';
 const TILE_CACHE_NAME = 'mapbox-tiles-v1';
-const HTML_CACHE_NAME = 'mapa-html-v5';
+const HTML_CACHE_NAME = 'mapa-html-v3';
 
 // Ícones inline para notificações push (evita arquivos externos)
 const NOTIFICATION_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTIiIGhlaWdodD0iMTkyIiB2aWV3Qm94PSIwIDAgMTkyIDE5MiI+PGNpcmNsZSBjeD0iOTYiIGN5PSI5NiIgcj0iOTYiIGZpbGw9IiMzYjgyZjYiLz48cGF0aCBkPSJNOTYgMzJjLTI2LjUgMC00OCAyMS41LTQ4IDQ4djE2YzAgMTcuNy0xNC4zIDMyLTMyIDMydjE2aDY0YzAgMTcuNyAxNC4zIDMyIDMyIDMyczMyLTE0LjMgMzItMzJoNjR2LTE2Yy0xNy43IDAtMzItMTQuMy0zMi0zMlY4MGMwLTI2LjUtMjEuNS00OC00OC00OHoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=';
 const NOTIFICATION_BADGE = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MiIgaGVpZ2h0PSI3MiIgdmlld0JveD0iMCAwIDcyIDcyIj48Y2lyY2xlIGN4PSIzNiIgY3k9IjM2IiByPSIzNiIgZmlsbD0iIzNiODJmNiIvPjxwYXRoIGQ9Ik0zNiAxMmMtOS45IDAtMTggOC4xLTE4IDE4djZjMCA2LjYtNS40IDEyLTEyIDEydjZoMjRjMCA2LjYgNS40IDEyIDEyIDEyczEyLTUuNCAxMi0xMmgyNHYtNmMtNi42IDAtMTItNS40LTEyLTEydi02YzAtOS45LTguMS0xOC0xOC0xOHoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=';
 
-// Assets CDN para cache (Mapbox, XLSX, jsQR e Fonts agora estão inline no HTML)
-// Apenas Supabase ainda usa CDN
+// Assets CDN para cache
 const CDN_ASSETS = [
+    'https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.css',
+    'https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.js',
+    'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap',
+    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+    'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js',
     'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js'
 ];
 
@@ -294,10 +298,11 @@ self.addEventListener('fetch', event => {
         return;
     }
 
-    // CDN assets (scripts) - cache-first
-    // Note: fonts.googleapis.com and fonts.gstatic.com removed - fonts are now inline
+    // CDN assets (fonts, scripts) - cache-first
     if (url.hostname.includes('cdn.jsdelivr.net') ||
         url.hostname.includes('cdnjs.cloudflare.com') ||
+        url.hostname.includes('fonts.googleapis.com') ||
+        url.hostname.includes('fonts.gstatic.com') ||
         url.hostname.includes('unpkg.com')) {
         event.respondWith(
             caches.match(event.request).then(cached => {
@@ -411,4 +416,4 @@ self.addEventListener('notificationclick', event => {
     );
 });
 
-console.log('🚀 Service Worker v7 carregado (Mapbox, XLSX, jsQR, Fonts inline)');
+console.log('🚀 Service Worker v5 carregado');
