@@ -11271,10 +11271,11 @@
 
                     // Se encontrou um match, determinar se foi exato ou por similaridade
                     if (bestMatch) {
-                        // Match exato: similarity >= 0.95 (endereços quase idênticos após normalização)
+                        // Match exato: APENAS quando os endereços normalizados são IDÊNTICOS
+                        // Isso garante que endereços como "Rua X, 111" vs "Rua X, 111, Alameda Y"
+                        // sejam tratados como similaridade (roxo) e apareçam na lista para cadastro
                         const normalizedBestClient = normalizeAddress(bestMatch.address);
-                        const finalSimilarity = textSimilarity(normalizedAddr, normalizedBestClient);
-                        const isExactMatch = finalSimilarity >= 0.95;
+                        const isExactMatch = normalizedAddr === normalizedBestClient;
 
                         return {
                             client: bestMatch,
