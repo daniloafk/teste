@@ -10765,7 +10765,15 @@
                     // Convert written numbers to digits (Dezesseis -> 16)
                     cleanAddr = convertWrittenNumbers(cleanAddr);
 
-                    return cleanAddr
+                    // STEP 1: Protect highway codes BEFORE normalization
+                    // Matches: PA-391, BR-316, GO-020, SP-270, etc. (state/federal highways)
+                    // Also matches without hyphen: PA 391, BR 316
+                    // Preserves the full code as "RODOVIA_XX_NNN" placeholder
+                    cleanAddr = cleanAddr.replace(/\b(pa|br|go|mg|sp|rj|rs|pr|sc|ba|ce|pe|ma|pi|mt|ms|to|am|ac|ro|rr|ap|se|al|rn|pb|es|df)\s*[-]?\s*(\d{1,4})\b/gi,
+                        (match, state, num) => `RODOVIA_${state.toUpperCase()}_${num}`);
+
+                    // STEP 2: Apply standard normalizations
+                    cleanAddr = cleanAddr
                         .toLowerCase()
                         .trim()
                         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove accents
@@ -10784,6 +10792,13 @@
                         .replace(/\b(santo|santa|sao|sta|sto)\b/gi, '') // Remove saint titles
                         .replace(/\s+/g, ' ')
                         .trim();
+
+                    // STEP 3: Restore highway codes in normalized format (lowercase, readable)
+                    // "rodovia_pa_391" -> "pa391" (compact identifier for comparison)
+                    cleanAddr = cleanAddr.replace(/rodovia_([a-z]{2})_(\d+)/gi,
+                        (match, state, num) => `${state.toLowerCase()}${num}`);
+
+                    return cleanAddr;
                 }
 
                 // Calculate distance between two coordinates in km
