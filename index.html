@@ -11537,7 +11537,7 @@
                     const ids = [];
                     const allAddresses = []; // Store all unique addresses in this group
                     const allAddressesWithDetails = []; // Store addresses with bairro/zipcode for matching
-                    const addressSequencePairs = []; // Store address+sequence pairs
+                    const addressSequencePairsTemp = []; // Temporary storage for address+sequence pairs
                     let deliveryStatus = null;
                     mergedItems.forEach(item => {
                         if (item.sequence && !sequences.includes(item.sequence)) {
@@ -11558,11 +11558,13 @@
                                 zipcode: item.zipcode
                             });
                         }
-                        // Store address+sequence pairs for popup display
+                        // Store address+sequence pairs temporarily (matchType será adicionado depois)
                         if (item.destination_address && item.sequence) {
-                            addressSequencePairs.push({
+                            addressSequencePairsTemp.push({
                                 address: item.destination_address,
-                                sequence: item.sequence
+                                sequence: item.sequence,
+                                bairro: item.bairro,
+                                zipcode: item.zipcode
                             });
                         }
                         // Use the first non-null delivery_status found
@@ -11574,13 +11576,29 @@
                     // Check if ANY address in this group has a registered client (Option 1: at least one)
                     // Collect ALL registered clients for this group, then cluster their coordinates
                     // PERFORMANCE: Usar cache para evitar recálculos
+                    // Também cria um mapa de matchType por endereço para uso na lista manual
                     const registeredMatches = [];
+                    const addressMatchMap = new Map(); // Mapa endereço -> matchType individual
                     for (const addrDetails of allAddressesWithDetails) {
                         const match = getCachedClientMatch(addrDetails.address, addrDetails.bairro, addrDetails.zipcode);
                         if (match) {
                             registeredMatches.push(match);
+                            // Armazena o matchType individual deste endereço
+                            addressMatchMap.set(addrDetails.address, match.matchType);
+                        } else {
+                            // Sem match = não cadastrado
+                            addressMatchMap.set(addrDetails.address, null);
                         }
                     }
+
+                    // Agora constrói addressSequencePairs com o matchType individual de cada endereço
+                    const addressSequencePairs = addressSequencePairsTemp.map(pair => ({
+                        address: pair.address,
+                        sequence: pair.sequence,
+                        bairro: pair.bairro,
+                        zipcode: pair.zipcode,
+                        matchType: addressMatchMap.get(pair.address) || null // 'exact', 'similarity', ou null
+                    }))
 
                     // Determine match type: 'exact' if ALL matches are exact, 'similarity' if at least one is similarity
                     let matchType = null;
@@ -13756,47 +13774,85 @@
 
                             return isNotRegistered || isSimilarityMatch;
                         })
-                        .map(f => {
+                        .flatMap(f => {
                             const props = f.properties;
 
-                            // allAddresses é armazenado como string 'addr1|||addr2|||addr3'
-                            let addresses = [];
-                            if (props.allAddresses) {
-                                if (typeof props.allAddresses === 'string') {
-                                    addresses = props.allAddresses.split('|||').filter(Boolean);
-                                } else if (Array.isArray(props.allAddresses)) {
-                                    addresses = props.allAddresses;
+                            // Usa addressSequencePairs que contém matchType individual de cada endereço
+                            let addressPairs = [];
+                            if (props.addressSequencePairs) {
+                                try {
+                                    if (typeof props.addressSequencePairs === 'string') {
+                                        addressPairs = JSON.parse(props.addressSequencePairs);
+                                    } else if (Array.isArray(props.addressSequencePairs)) {
+                                        addressPairs = props.addressSequencePairs;
+                                    }
+                                } catch (e) {
+                                    addressPairs = [];
                                 }
                             }
 
-                            // Primeiro endereço do grupo (ou address principal)
-                            const firstAddr = addresses[0] || props.address || '';
+                            // Se não tiver addressSequencePairs, fallback para método antigo
+                            if (addressPairs.length === 0) {
+                                // Fallback: allAddresses é armazenado como string 'addr1|||addr2|||addr3'
+                                let addresses = [];
+                                if (props.allAddresses) {
+                                    if (typeof props.allAddresses === 'string') {
+                                        addresses = props.allAddresses.split('|||').filter(Boolean);
+                                    } else if (Array.isArray(props.allAddresses)) {
+                                        addresses = props.allAddresses;
+                                    }
+                                }
 
-                            // sequences é armazenado como string '1, 2, 3'
-                            let sequences = [];
-                            if (props.sequences) {
-                                if (typeof props.sequences === 'string') {
-                                    sequences = props.sequences.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-                                } else if (Array.isArray(props.sequences)) {
-                                    sequences = props.sequences;
+                                // sequences é armazenado como string '1, 2, 3'
+                                let sequences = [];
+                                if (props.sequences) {
+                                    if (typeof props.sequences === 'string') {
+                                        sequences = props.sequences.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+                                    } else if (Array.isArray(props.sequences)) {
+                                        sequences = props.sequences;
+                                    }
+                                }
+
+                                // Cria pairs para o fallback
+                                addressPairs = addresses.map((addr, idx) => ({
+                                    address: addr,
+                                    sequence: sequences[idx] || 0,
+                                    matchType: props.matchType || null // Usa matchType do marcador
+                                }));
+
+                                // Se ainda vazio, usa endereço principal
+                                if (addressPairs.length === 0 && props.address) {
+                                    addressPairs = [{
+                                        address: props.address,
+                                        sequence: sequences[0] || 0,
+                                        matchType: props.matchType || null
+                                    }];
                                 }
                             }
-                            const firstSeq = sequences[0] || 0;
 
-                            return {
+                            // IMPORTANTE: Filtra apenas endereços que NÃO têm match exato
+                            // - matchType === 'exact' -> JÁ CADASTRADO, não mostra
+                            // - matchType === 'similarity' -> match por similaridade, MOSTRA
+                            // - matchType === null -> não cadastrado, MOSTRA
+                            const unregisteredPairs = addressPairs.filter(pair =>
+                                pair.matchType !== 'exact'
+                            );
+
+                            // Retorna um item para cada endereço não cadastrado do grupo
+                            return unregisteredPairs.map(pair => ({
                                 id: props.ids ? props.ids.split(',')[0] : props.id,
-                                sequence: firstSeq,
-                                destination_address: firstAddr,
-                                bairro: props.bairro || '',
+                                sequence: pair.sequence || 0,
+                                destination_address: pair.address || '',
+                                bairro: pair.bairro || props.bairro || '',
                                 city: props.city || '',
-                                zipcode: props.zipcode || '',
+                                zipcode: pair.zipcode || props.zipcode || '',
                                 latitude: f.geometry.coordinates[1],
                                 longitude: f.geometry.coordinates[0],
                                 // Dados extras para grupos
-                                allAddresses: addresses,
-                                allSequences: sequences,
+                                allAddresses: [pair.address],
+                                allSequences: [pair.sequence],
                                 allIds: props.ids
-                            };
+                            }));
                         })
                         .filter(addr => addr.destination_address) // Remove entradas sem endereço
                         .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
