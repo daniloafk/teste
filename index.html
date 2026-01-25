@@ -13341,7 +13341,7 @@
         let torchSupported = false; // Se o dispositivo suporta lanterna
         let lastBrightnessCheck = 0; // Timestamp da última verificação de luminosidade
         const BRIGHTNESS_CHECK_INTERVAL = 500; // Verificar a cada 500ms
-        const DARK_THRESHOLD = 50; // Limiar de escuridão (0-255, menor = mais escuro)
+        const DARK_THRESHOLD = 30; // Limiar de escuridão (0-255, menor = mais escuro)
 
         // Open QR Scanner
         cadastrarBtn.addEventListener('click', () => {
