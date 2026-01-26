@@ -5597,10 +5597,10 @@
                             longitude: pendingClient.longitude
                         };
 
-                        // Verifica se o endereço já existe no Supabase (incluindo updated_at para conflitos)
+                        // Verifica se o endereço já existe no Supabase
                         const { data: existing, error: selectError } = await db
                             .from('clients')
-                            .select('id, updated_at')
+                            .select('id')
                             .eq('address', pendingClient.address)
                             .limit(1);
 
@@ -5612,44 +5612,28 @@
                         }
 
                         if (existing && existing.length > 0) {
-                            // UPDATE: Endereço já existe
-                            // RESOLUÇÃO DE CONFLITO: Só atualiza se o timestamp local for mais recente
-                            const remoteUpdatedAt = existing[0].updated_at ? new Date(existing[0].updated_at) : new Date(0);
-                            const localUpdatedAt = pendingClient.updatedAt ? new Date(pendingClient.updatedAt) : new Date();
+                            // UPDATE: Endereço já existe, atualiza coordenadas
+                            const { error: updateError } = await db
+                                .from('clients')
+                                .update({
+                                    bairro: clientData.bairro,
+                                    city: clientData.city,
+                                    zipcode: clientData.zipcode,
+                                    latitude: clientData.latitude,
+                                    longitude: clientData.longitude
+                                })
+                                .eq('address', pendingClient.address);
 
-                            if (localUpdatedAt >= remoteUpdatedAt) {
-                                // Alteração local é mais recente - faz UPDATE
-                                const { error: updateError } = await db
-                                    .from('clients')
-                                    .update({
-                                        bairro: clientData.bairro,
-                                        city: clientData.city,
-                                        zipcode: clientData.zipcode,
-                                        latitude: clientData.latitude,
-                                        longitude: clientData.longitude,
-                                        updated_at: pendingClient.updatedAt || new Date().toISOString()
-                                    })
-                                    .eq('address', pendingClient.address);
-
-                                if (!updateError) {
-                                    syncSuccess = true;
-                                    console.log(`[SYNC] UPDATE aplicado (local mais recente): ${pendingClient.address}`);
-                                } else {
-                                    console.error('[SYNC] Erro no UPDATE:', updateError);
-                                }
+                            if (!updateError) {
+                                syncSuccess = true;
                             } else {
-                                // Alteração remota é mais recente - descarta alteração local
-                                syncSuccess = true; // Remove da fila mesmo assim
-                                console.log(`[SYNC] UPDATE ignorado (remoto mais recente): ${pendingClient.address}`);
+                                console.error('[SYNC] Erro no UPDATE:', updateError);
                             }
                         } else {
                             // INSERT: Novo endereço
                             const { error: insertError } = await db
                                 .from('clients')
-                                .insert({
-                                    ...clientData,
-                                    updated_at: pendingClient.updatedAt || new Date().toISOString()
-                                });
+                                .insert(clientData);
 
                             if (!insertError) {
                                 syncSuccess = true;
@@ -5733,28 +5717,16 @@
                 const pendingStatus = await getPendingFromOfflineDB('pendingDeliveryStatus');
                 if (pendingStatus.length === 0) return syncedStatusChanges;
 
-                // RESOLUÇÃO DE CONFLITOS: Ordena por timestamp para aplicar na ordem correta
-                // Mais recente vence se houver conflito
-                pendingStatus.sort((a, b) => {
-                    const timeA = a.changedAt ? new Date(a.changedAt).getTime() : 0;
-                    const timeB = b.changedAt ? new Date(b.changedAt).getTime() : 0;
-                    return timeA - timeB; // Mais antigo primeiro, mais recente por último (sobrescreve)
-                });
-
                 // BATCH: Agrupa todos os IDs por status
-                const statusGroups = new Map(); // status -> { ids: [], localIds: [], changedAt }
+                const statusGroups = new Map(); // status -> { ids: [], localIds: [] }
 
                 for (const item of pendingStatus) {
                     if (!statusGroups.has(item.status)) {
-                        statusGroups.set(item.status, { ids: [], localIds: [], changedAt: item.changedAt });
+                        statusGroups.set(item.status, { ids: [], localIds: [] });
                     }
                     const group = statusGroups.get(item.status);
                     group.ids.push(...item.ids);
                     group.localIds.push(item.localId);
-                    // Mantém o timestamp mais recente
-                    if (item.changedAt && (!group.changedAt || new Date(item.changedAt) > new Date(group.changedAt))) {
-                        group.changedAt = item.changedAt;
-                    }
                 }
 
                 // BATCH: Uma chamada por status (ao invés de uma por item)
@@ -5772,26 +5744,14 @@
                         let allSuccess = true;
 
                         for (const idChunk of idChunks) {
-                            // Inclui timestamp na atualização para rastreamento
                             const { error } = await db
                                 .from('planilha')
-                                .update({
-                                    delivery_status: status,
-                                    status_updated_at: group.changedAt || new Date().toISOString()
-                                })
+                                .update({ delivery_status: status })
                                 .in('id', idChunk);
 
                             if (error) {
-                                // Se o campo status_updated_at não existir, tenta sem ele
-                                const { error: fallbackError } = await db
-                                    .from('planilha')
-                                    .update({ delivery_status: status })
-                                    .in('id', idChunk);
-
-                                if (fallbackError) {
-                                    allSuccess = false;
-                                    break;
-                                }
+                                allSuccess = false;
+                                break;
                             }
                         }
 
@@ -5978,17 +5938,6 @@
                                 });
                             }
 
-                            // Obtém IDs com status de entrega pendente
-                            const pendingStatusItems = await getAllFromOfflineDB('pendingDeliveryStatus');
-                            const pendingStatusIdsSet = new Set();
-                            if (pendingStatusItems && pendingStatusItems.length > 0) {
-                                pendingStatusItems.forEach(item => {
-                                    if (item.ids) {
-                                        item.ids.forEach(id => pendingStatusIdsSet.add(String(id)));
-                                    }
-                                });
-                            }
-
                             // Merge: para cada feature do Supabase, verifica se temos alteração local pendente
                             const mergedFeatures = supabaseMarkers.geojson.features.map(remoteFeature => {
                                 const localFeature = localFeaturesMap.get(remoteFeature.properties.ids);
@@ -5998,46 +5947,22 @@
                                     return remoteFeature;
                                 }
 
-                                // Verifica se algum endereço deste marcador tem alteração de cadastro pendente
-                                let hasLocalPendingClientChange = false;
+                                // Verifica se algum endereço deste marcador tem alteração pendente
+                                let hasLocalPendingChange = false;
                                 const allAddresses = remoteFeature.properties.allAddresses;
                                 if (allAddresses) {
                                     const addrList = typeof allAddresses === 'string'
                                         ? allAddresses.split('|||')
                                         : allAddresses;
-                                    hasLocalPendingClientChange = addrList.some(addr =>
+                                    hasLocalPendingChange = addrList.some(addr =>
                                         pendingAddressesSet.has(normalizeAddressForComparison(addr))
                                     );
                                 }
 
-                                // Verifica se algum ID deste marcador tem alteração de status pendente
-                                let hasLocalPendingStatusChange = false;
-                                const featureIds = remoteFeature.properties.ids;
-                                if (featureIds) {
-                                    const idList = featureIds.split(',').map(id => id.trim());
-                                    hasLocalPendingStatusChange = idList.some(id => pendingStatusIdsSet.has(id));
-                                }
-
-                                if (hasLocalPendingClientChange) {
-                                    // Temos alteração de cadastro local pendente - MANTÉM o feature LOCAL completo
+                                if (hasLocalPendingChange) {
+                                    // Temos alteração local pendente - MANTÉM o feature LOCAL
                                     // As coordenadas serão atualizadas quando syncPendingClients rodar
                                     return localFeature;
-                                } else if (hasLocalPendingStatusChange) {
-                                    // Temos alteração de status local pendente - mantém STATUS local, usa coords do remoto
-                                    return {
-                                        ...remoteFeature,
-                                        properties: {
-                                            ...remoteFeature.properties,
-                                            // Preserva status de entrega local
-                                            deliveryStatus: localFeature.properties.deliveryStatus,
-                                            // Preserva dados de reversão
-                                            previousCoordinates: localFeature.properties.previousCoordinates || remoteFeature.properties.previousCoordinates,
-                                            previousMatchType: localFeature.properties.previousMatchType || remoteFeature.properties.previousMatchType,
-                                            previousIsRegistered: localFeature.properties.previousIsRegistered !== undefined
-                                                ? localFeature.properties.previousIsRegistered
-                                                : remoteFeature.properties.previousIsRegistered
-                                        }
-                                    };
                                 } else {
                                     // Sem alteração local pendente - USA o feature do SUPABASE
                                     // Mas preserva algumas propriedades locais importantes
@@ -8255,7 +8180,7 @@
                         if (pageData && pageData.length > 0) {
                             allData = allData.concat(pageData);
                             from += pageSize;
-                            // Se retornou menos que pageSize, não h�� mais dados
+                            // Se retornou menos que pageSize, não há mais dados
                             if (pageData.length < pageSize) {
                                 hasMore = false;
                             }
@@ -10275,9 +10200,7 @@
                 try {
                     await saveToOfflineDB('pendingDeliveryStatus', {
                         ids: ids,
-                        status: status,
-                        // Timestamp para resolução de conflitos entre dispositivos
-                        changedAt: new Date().toISOString()
+                        status: status
                     });
                     updateOfflineIndicator();
                     return true;
@@ -10439,7 +10362,7 @@
                     // PROTEÇÃO ADICIONAL: Verifica novamente se houve alteração local durante a execução assíncrona
                     // Isso evita sobrescrever uma alteração do usuário que ocorreu enquanto buscávamos dados do servidor
                     if (Date.now() - lastRouteMarkersSave < 2000) {
-                        console.log('⏸️ Sync cancelado: alteração local detectada durante execução');
+                        console.log('⏸️ Sync cancelado: alteraç��o local detectada durante execução');
                         return;
                     }
 
@@ -13886,7 +13809,7 @@
                                     (typeof props.allAddresses === 'string' ? props.allAddresses.split('|||') : props.allAddresses) :
                                     [props.address];
 
-                                // Verifica se algum endereço corresponde
+                                // Verifica se algum endere��o corresponde
                                 const normalizedAddresses = addresses.map(a => normalizeAddressForComparison(a));
                                 if (normalizedAddresses.includes(normalizedAddressToCheck)) {
                                     // Retorna como cliente existente
@@ -15013,9 +14936,7 @@
                 city: currentRecord.city || null,
                 zipcode: currentRecord.zipcode || null,
                 latitude: coordinates.latitude,
-                longitude: coordinates.longitude,
-                // Timestamp para resolução de conflitos entre dispositivos
-                updatedAt: new Date().toISOString()
+                longitude: coordinates.longitude
             };
 
             // Guarda o endereço original do cliente para atualização do marcador
