@@ -5938,10 +5938,11 @@
                     syncResult.syncedSimilarityChanges ||
                     syncResult.syncedDeletedIds.length > 0;
 
-                // IMPORTANTE: Se houve mudanças de status OU similarity, atualiza o route_markers_cache no Supabase
+                // IMPORTANTE: Se houve mudanças de status, similarity OU exclusões, atualiza o route_markers_cache no Supabase
                 // Isso garante que outros dispositivos recebam as alterações via polling de versão
                 const hasStatusOrSimilarityChanges = Object.keys(syncResult.syncedStatusChanges).length > 0 || syncResult.syncedSimilarityChanges;
-                if (hasStatusOrSimilarityChanges && map && map.getSource('route-stops')) {
+                const hasDeleteChanges = syncResult.syncedDeletedIds.length > 0;
+                if ((hasStatusOrSimilarityChanges || hasDeleteChanges) && map && map.getSource('route-stops')) {
                     try {
                         const source = map.getSource('route-stops');
                         if (source && source._data) {
@@ -5956,7 +5957,7 @@
                             };
                             // Salva no Supabase com nova versão para outros dispositivos detectarem
                             await _doSaveRouteMarkersToSupabase(currentGeojson, stats);
-                            console.log('☁️ route_markers_cache atualizado após sync de status offline');
+                            console.log('☁️ route_markers_cache atualizado após sync offline (status/similarity/deletes)');
                         }
                     } catch (cacheErr) {
                         console.log('⚠️ Erro ao atualizar route_markers_cache após sync:', cacheErr);
@@ -6262,9 +6263,54 @@
                     if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                         updateRouteMarkersStatus(syncResult.syncedStatusChanges);
                     }
+
+                    // Remove clientes excluídos do cache e atualiza marcadores
+                    if (syncResult.syncedDeletedIds.length > 0) {
+                        await removeSyncedDeletesFromCache(syncResult.syncedDeletedIds);
+                    }
                 }
             } catch (err) {
                 // Sync falhou silenciosamente
+            }
+        }
+
+        // PERFORMANCE: Remove clientes excluídos do cache e atualiza marcadores de rota
+        async function removeSyncedDeletesFromCache(deletedIds) {
+            if (!deletedIds || deletedIds.length === 0) return;
+
+            try {
+                // 1. Remove do cache em memória
+                if (clientesCache.data) {
+                    clientesCache.data = clientesCache.data.filter(c => !deletedIds.includes(c.id));
+                    clientesCache.timestamp = Date.now();
+                }
+
+                // 2. Remove de allClientes
+                if (allClientes) {
+                    allClientes = allClientes.filter(c => !deletedIds.includes(c.id));
+                }
+
+                // 3. Remove do IndexedDB cache
+                try {
+                    const cachedClients = await getAllFromOfflineDB('cachedClients');
+                    if (cachedClients && cachedClients.length > 0) {
+                        const filtered = cachedClients.filter(c => !deletedIds.includes(c.id));
+                        if (filtered.length !== cachedClients.length) {
+                            await saveCacheToDB('cachedClients', filtered);
+                        }
+                    }
+                } catch (e) {
+                    console.log('⚠️ Erro ao remover clientes excluídos do cache:', e);
+                }
+
+                // 4. Re-renderiza a lista de clientes na UI
+                if (allClientes && allClientes.length > 0) {
+                    renderClientes(allClientes);
+                }
+
+                console.log(`🗑️ ${deletedIds.length} cliente(s) excluído(s) removido(s) do cache local`);
+            } catch (err) {
+                console.log('⚠️ Erro ao remover exclusões do cache:', err);
             }
         }
 
@@ -6367,6 +6413,13 @@
                         if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                             await waitForIdle();
                             updateRouteMarkersStatus(syncResult.syncedStatusChanges);
+                        }
+
+                        // Step 3d: Remove clientes excluídos do cache e UI
+                        if (syncResult.syncedDeletedIds.length > 0) {
+                            await waitForIdle();
+                            await removeSyncedDeletesFromCache(syncResult.syncedDeletedIds);
+                            await longYield();
                         }
                     }
 
@@ -8649,7 +8702,7 @@
                     timestamp = offlineIdStr.substring(8);
                 }
 
-                // Encontra o cliente pelo ID temporário OU pelo endereço
+                // Encontra o cliente pelo ID tempor��rio OU pelo endereço
                 for (const client of pendingClients) {
                     const clientTempId = client.id ? String(client.id) : '';
 
@@ -11816,7 +11869,7 @@
                             wasDeactivated: wasDeactivated, // Flag indicando que foi desativado pelo usuário
                             originalMatchType: originalMatchType, // Match type original (para reativação)
                             originalMatchedClientAddress: originalMatchedClientAddress, // Endereço original (para reativação)
-                            originalCoordinates: originalCoordinates, // Coordenadas originais do cliente (para reativação)
+                            originalCoordinates: originalCoordinates, // Coordenadas originais do cliente (para reativaç��o)
                             bairro: group1.originalBairro || null,
                             zipcode: group1.originalZipcode || null
                         });
@@ -12272,7 +12325,7 @@
 
                                 if (markerFeature) {
                                     // IMPORTANTE: Busca dados atuais do feature, não usa props capturado
-                                    // porque props pode estar desatualizado após setData() de reativação
+                                    // porque props pode estar desatualizado após setData() de reativaç��o
                                     const currentProps = markerFeature.properties;
 
                                     // Busca as coordenadas originais da planilha
