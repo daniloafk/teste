@@ -13765,14 +13765,11 @@
                     // - Roxos: isRegistered === true + matchType === 'similarity' (match por similaridade, não exato)
                     // NÃO inclui:
                     // - Verdes: isRegistered === true + matchType === 'exact' (já cadastrado exatamente)
-                    // - Finalizados: deliveryStatus === 'delivered' ou 'not_delivered'
+                    // NOTA: O status de entrega (delivered/not_delivered) NÃO afeta a lista de cadastro
+                    // Um endereço pode ser marcado como entregue mas ainda precisar ser cadastrado
                     const unregisteredAddresses = features
                         .filter(f => {
                             const props = f.properties;
-
-                            // Não finalizado
-                            const isNotDelivered = props.deliveryStatus !== 'delivered' && props.deliveryStatus !== 'not_delivered';
-                            if (!isNotDelivered) return false;
 
                             // Verifica se NÃO está cadastrado (vermelho)
                             const isNotRegistered = props.isRegistered === false || props.isRegistered === 'false' ||
