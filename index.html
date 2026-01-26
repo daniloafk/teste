@@ -8882,9 +8882,6 @@
                         // 3. Já registrados (verde) mas com coordenadas diferentes - AJUSTE DE POSIÇÃO
                         if (!props.isRegistered || props.matchType === 'similarity' || coordsChanged) {
                             updated = true;
-                            const packageCount = props.packageCount || 1;
-                            const newIconId = `pin-green-${packageCount}`;
-                            iconsToGenerate.add(newIconId);
 
                             // Salva dados originais para permitir reversão após exclusão do cliente
                             // IMPORTANTE: Só salva previousCoordinates se ainda não existe (evita sobrescrever o original)
@@ -8892,6 +8889,57 @@
                             const previousMatchedClientAddress = props.previousMatchedClientAddress || props.matchedClientAddress || '';
                             const previousCoordinates = props.previousCoordinates || JSON.stringify(currentCoords);
                             const previousIsRegistered = props.previousIsRegistered !== undefined ? props.previousIsRegistered : (props.isRegistered || false);
+
+                            // Atualiza addressSequencePairs para marcar APENAS o endereço cadastrado como 'exact'
+                            let updatedAddressSequencePairs = props.addressSequencePairs;
+                            if (props.addressSequencePairs) {
+                                try {
+                                    let pairs = typeof props.addressSequencePairs === 'string'
+                                        ? JSON.parse(props.addressSequencePairs)
+                                        : props.addressSequencePairs;
+
+                                    // Atualiza o matchType do endereço cadastrado para 'exact'
+                                    pairs = pairs.map(pair => {
+                                        const pairNormalized = normalizeAddressForComparison(pair.address);
+                                        if (pairNormalized === normalizedNewAddr) {
+                                            return { ...pair, matchType: 'exact' };
+                                        }
+                                        return pair;
+                                    });
+
+                                    updatedAddressSequencePairs = JSON.stringify(pairs);
+                                } catch (e) {
+                                    // Mantém o original se der erro
+                                }
+                            }
+
+                            // Verifica se ainda há endereços não cadastrados no grupo
+                            // para determinar a cor correta do marcador
+                            let hasUnregisteredAddresses = false;
+                            let finalMatchType = 'exact';
+                            if (updatedAddressSequencePairs) {
+                                try {
+                                    const pairs = typeof updatedAddressSequencePairs === 'string'
+                                        ? JSON.parse(updatedAddressSequencePairs)
+                                        : updatedAddressSequencePairs;
+
+                                    // Se algum endereço não tem matchType 'exact', ainda há pendências
+                                    hasUnregisteredAddresses = pairs.some(pair =>
+                                        pair.matchType !== 'exact'
+                                    );
+
+                                    if (hasUnregisteredAddresses) {
+                                        // Mantém roxo se ainda há endereços por cadastrar
+                                        finalMatchType = 'similarity';
+                                    }
+                                } catch (e) {}
+                            }
+
+                            // Define a cor do marcador baseado no status
+                            const packageCount = props.packageCount || 1;
+                            const markerColor = hasUnregisteredAddresses ? 'purple' : 'green';
+                            const newIconId = `pin-${markerColor}-${packageCount}`;
+                            iconsToGenerate.add(newIconId);
 
                             return {
                                 ...feature,
@@ -8902,10 +8950,11 @@
                                 properties: {
                                     ...props,
                                     isRegistered: true,
-                                    matchType: 'exact',
+                                    matchType: finalMatchType,
                                     icon: newIconId,
                                     latitude: clientData.latitude,
                                     longitude: clientData.longitude,
+                                    addressSequencePairs: updatedAddressSequencePairs,
                                     // Salva estado anterior para reversão (preserva o original)
                                     previousMatchType: previousMatchType,
                                     previousMatchedClientAddress: previousMatchedClientAddress,
