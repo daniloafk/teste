@@ -6280,7 +6280,12 @@
                     if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                         updateRouteMarkersStatus(syncResult.syncedStatusChanges);
                     }
-                }
+
+                    // Remove localmente os clientes deletados que foram sincronizados (evita reaparecer)
+                    if (syncResult.syncedDeletedIds && syncResult.syncedDeletedIds.length > 0) {
+                        await removeDeletedClientsFromLocalState(syncResult.syncedDeletedIds);
+                    }
+}
             } catch (err) {
                 // Sync falhou silenciosamente
             }
@@ -6394,6 +6399,13 @@
                             await waitForIdle();
                             updateRouteMarkersStatus(syncResult.syncedStatusChanges);
                         }
+
+                        // Step 3d: Remove localmente os clientes deletados que foram sincronizados (evita reaparecer)
+                        if (syncResult.syncedDeletedIds && syncResult.syncedDeletedIds.length > 0) {
+                            await waitForIdle();
+                            await removeDeletedClientsFromLocalState(syncResult.syncedDeletedIds);
+                            await longYield();
+                        }
                     }
 
                     // Step 4: Sincroniza marcadores de rota com Supabase
@@ -6486,7 +6498,70 @@
             stopPeriodicCacheRefresh();
         });
 
-        // Get all data from IndexedDB store (for offline reading)
+        
+        // Delete a single record from IndexedDB by key (safe, resolves even on failure)
+        function deleteKeyFromOfflineDB(storeName, key) {
+            return new Promise((resolve) => {
+                if (!offlineDB) {
+                    initOfflineDB().then(() => {
+                        if (offlineDB) {
+                            deleteKeyFromOfflineDB(storeName, key).then(resolve).catch(() => resolve(false));
+                        } else {
+                            resolve(false);
+                        }
+                    }).catch(() => resolve(false));
+                    return;
+                }
+
+                try {
+                    const transaction = offlineDB.transaction([storeName], 'readwrite');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.delete(key);
+
+                    request.onsuccess = () => resolve(true);
+                    request.onerror = () => resolve(false);
+                } catch (err) {
+                    resolve(false);
+                }
+            });
+        }
+
+        // Remove deleted clients from local cache + UI (to avoid reappearing after sync)
+        async function removeDeletedClientsFromLocalState(deletedIds) {
+            try {
+                if (!deletedIds || deletedIds.length === 0) return;
+
+                // 1) Remove from cachedClients store
+                for (const id of deletedIds) {
+                    await deleteKeyFromOfflineDB('cachedClients', id);
+                }
+
+                // 2) Remove from in-memory list and refresh UI/markers if available
+                if (typeof allClientes !== 'undefined' && Array.isArray(allClientes) && allClientes.length > 0) {
+                    const idSet = new Set(deletedIds.map(String));
+                    const filtered = allClientes.filter(c => !idSet.has(String(c.id)));
+
+                    // Only re-render if something changed
+                    if (filtered.length !== allClientes.length) {
+                        allClientes = filtered;
+                        try {
+                            renderClientes(allClientes);
+                        } catch (err) { /* no-op */ }
+
+                        try {
+                            if (typeof markersVisible !== 'undefined' && markersVisible) {
+                                addMarkersToMap(allClientes);
+                            }
+                        } catch (err) { /* no-op */ }
+                    }
+                }
+            } catch (err) {
+                // Falha silenciosa: não impede o sync, apenas evita a atualização local
+            }
+        }
+
+
+// Get all data from IndexedDB store (for offline reading)
         function getAllFromOfflineDB(storeName) {
             return new Promise((resolve, reject) => {
                 if (!offlineDB) {
