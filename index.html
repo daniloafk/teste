@@ -6369,7 +6369,8 @@
                     const pendingClients = await countPendingItems('pendingClients');
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0;
+                    const pendingDeletes = await countPendingItems('pendingDeletes');
+                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
@@ -7335,9 +7336,10 @@
                         const pendingClients = await countPendingItems('pendingClients');
                         const pendingPlanilha = await countPendingItems('pendingPlanilha');
                         const pendingStatus = await countPendingItems('pendingDeliveryStatus');
+                        const pendingDeletes = await countPendingItems('pendingDeletes');
 
                         // Só sincroniza se houver dados pendentes
-                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0) {
+                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0) {
                             syncAllPendingData();
                         }
                     } catch (e) {
@@ -8702,7 +8704,7 @@
                     timestamp = offlineIdStr.substring(8);
                 }
 
-                // Encontra o cliente pelo ID tempor��rio OU pelo endereço
+                // Encontra o cliente pelo ID temporário OU pelo endereço
                 for (const client of pendingClients) {
                     const clientTempId = client.id ? String(client.id) : '';
 
@@ -11869,7 +11871,7 @@
                             wasDeactivated: wasDeactivated, // Flag indicando que foi desativado pelo usuário
                             originalMatchType: originalMatchType, // Match type original (para reativação)
                             originalMatchedClientAddress: originalMatchedClientAddress, // Endereço original (para reativação)
-                            originalCoordinates: originalCoordinates, // Coordenadas originais do cliente (para reativaç��o)
+                            originalCoordinates: originalCoordinates, // Coordenadas originais do cliente (para reativação)
                             bairro: group1.originalBairro || null,
                             zipcode: group1.originalZipcode || null
                         });
@@ -12325,7 +12327,7 @@
 
                                 if (markerFeature) {
                                     // IMPORTANTE: Busca dados atuais do feature, não usa props capturado
-                                    // porque props pode estar desatualizado após setData() de reativaç��o
+                                    // porque props pode estar desatualizado após setData() de reativação
                                     const currentProps = markerFeature.properties;
 
                                     // Busca as coordenadas originais da planilha
@@ -14585,7 +14587,7 @@
             }
         }
 
-        // Handler para detectar fim de animação do mapa
+        // Handler para detectar fim de anima��ão do mapa
         function onMapMoveEnd() {
             if (isAdjustMode) {
                 isMapAnimating = false;
