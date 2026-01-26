@@ -5907,113 +5907,6 @@
             updateOfflineIndicator();
 
             try {
-                // =====================================================
-                // PASSO 0: BAIXAR route_markers_cache DO SUPABASE PRIMEIRO
-                // Isso garante que temos os dados mais recentes de outros dispositivos
-                // ANTES de aplicar nossas alterações locais
-                // =====================================================
-                try {
-                    const supabaseMarkers = await loadRouteMarkersFromSupabase();
-                    if (supabaseMarkers && supabaseMarkers.geojson && map && map.getSource('route-stops')) {
-                        const source = map.getSource('route-stops');
-                        const localData = source._data;
-
-                        if (localData && localData.features) {
-                            // Cria mapa de features locais por ID
-                            const localFeaturesMap = new Map();
-                            localData.features.forEach(f => {
-                                if (f.properties && f.properties.ids) {
-                                    localFeaturesMap.set(f.properties.ids, f);
-                                }
-                            });
-
-                            // Obtém endereços de pendingClients para saber quais foram alterados localmente
-                            const pendingClients = await getAllFromOfflineDB('pendingClients');
-                            const pendingAddressesSet = new Set();
-                            if (pendingClients && pendingClients.length > 0) {
-                                pendingClients.forEach(c => {
-                                    if (c.address) {
-                                        pendingAddressesSet.add(normalizeAddressForComparison(c.address));
-                                    }
-                                });
-                            }
-
-                            // Merge: para cada feature do Supabase, verifica se temos alteração local pendente
-                            const mergedFeatures = supabaseMarkers.geojson.features.map(remoteFeature => {
-                                const localFeature = localFeaturesMap.get(remoteFeature.properties.ids);
-
-                                if (!localFeature) {
-                                    // Não temos local, usa remoto
-                                    return remoteFeature;
-                                }
-
-                                // Verifica se algum endereço deste marcador tem alteração pendente
-                                let hasLocalPendingChange = false;
-                                const allAddresses = remoteFeature.properties.allAddresses;
-                                if (allAddresses) {
-                                    const addrList = typeof allAddresses === 'string'
-                                        ? allAddresses.split('|||')
-                                        : allAddresses;
-                                    hasLocalPendingChange = addrList.some(addr =>
-                                        pendingAddressesSet.has(normalizeAddressForComparison(addr))
-                                    );
-                                }
-
-                                if (hasLocalPendingChange) {
-                                    // Temos alteração local pendente - MANTÉM o feature LOCAL
-                                    // As coordenadas serão atualizadas quando syncPendingClients rodar
-                                    return localFeature;
-                                } else {
-                                    // Sem alteração local pendente - USA o feature do SUPABASE
-                                    // Mas preserva algumas propriedades locais importantes
-                                    return {
-                                        ...remoteFeature,
-                                        properties: {
-                                            ...remoteFeature.properties,
-                                            // Preserva dados de reversão se existirem localmente
-                                            previousCoordinates: localFeature.properties.previousCoordinates || remoteFeature.properties.previousCoordinates,
-                                            previousMatchType: localFeature.properties.previousMatchType || remoteFeature.properties.previousMatchType,
-                                            previousIsRegistered: localFeature.properties.previousIsRegistered !== undefined
-                                                ? localFeature.properties.previousIsRegistered
-                                                : remoteFeature.properties.previousIsRegistered
-                                        }
-                                    };
-                                }
-                            });
-
-                            // Adiciona features locais que não existem no remoto
-                            localData.features.forEach(localFeature => {
-                                const existsInRemote = supabaseMarkers.geojson.features.some(
-                                    rf => rf.properties.ids === localFeature.properties.ids
-                                );
-                                if (!existsInRemote) {
-                                    mergedFeatures.push(localFeature);
-                                }
-                            });
-
-                            // Atualiza o mapa com os dados mesclados
-                            const mergedGeojson = {
-                                type: 'FeatureCollection',
-                                features: mergedFeatures
-                            };
-
-                            source.setData(mergedGeojson);
-
-                            // Salva no cache local (sem enviar para Supabase ainda)
-                            await saveRouteMarkersToCache(mergedGeojson, supabaseMarkers.stats, true);
-
-                            // Atualiza versão local
-                            if (supabaseMarkers.version) {
-                                currentMarkersVersion = supabaseMarkers.version;
-                            }
-
-                            console.log('🔄 Marcadores mesclados com Supabase antes de sincronizar pendentes');
-                        }
-                    }
-                } catch (mergeErr) {
-                    console.log('⚠️ Erro ao mesclar marcadores do Supabase:', mergeErr);
-                }
-                // =====================================================
                 // PERFORMANCE: Usa longYield entre syncs para não travar o mapa durante interação
                 const clientAddresses = await syncPendingClients();
                 syncResult.syncedClientAddresses = clientAddresses || [];
@@ -10362,7 +10255,7 @@
                     // PROTEÇÃO ADICIONAL: Verifica novamente se houve alteração local durante a execução assíncrona
                     // Isso evita sobrescrever uma alteração do usuário que ocorreu enquanto buscávamos dados do servidor
                     if (Date.now() - lastRouteMarkersSave < 2000) {
-                        console.log('⏸️ Sync cancelado: alteraç��o local detectada durante execução');
+                        console.log('⏸️ Sync cancelado: alteração local detectada durante execução');
                         return;
                     }
 
@@ -13809,7 +13702,7 @@
                                     (typeof props.allAddresses === 'string' ? props.allAddresses.split('|||') : props.allAddresses) :
                                     [props.address];
 
-                                // Verifica se algum endere��o corresponde
+                                // Verifica se algum endereço corresponde
                                 const normalizedAddresses = addresses.map(a => normalizeAddressForComparison(a));
                                 if (normalizedAddresses.includes(normalizedAddressToCheck)) {
                                     // Retorna como cliente existente
