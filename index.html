@@ -13867,13 +13867,39 @@
         async function findExistingClientFast(addressToCheck, options = {}) {
             const {
                 onlineTimeout = 3000,  // Timeout de 3s para busca online
-                skipOnline = false     // Pular busca online (força uso do cache)
+                skipOnline = false,    // Pular busca online (força uso do cache)
+                spx_tn = null        // Identificador do QR (spx_tn) para busca offline
             } = options;
 
-            if (!addressToCheck) return null;
+            if (!addressToCheck && !spx_tn) return null;
 
             const normalizedAddressToCheck = normalizeAddressForComparison(addressToCheck);
             let existingClient = null;
+
+            // PASSO 0: Se tiver spx_tn (QR), tenta localizar pelo identificador (mais confiável offline)
+            const spxToCheck = spx_tn != null ? String(spx_tn) : null;
+            if (spxToCheck) {
+                try {
+                    const pendingClientsById = await getAllFromOfflineDB('pendingClients');
+                    existingClient = (pendingClientsById || []).find(c =>
+                        c && c.spx_tn != null && String(c.spx_tn) === spxToCheck
+                    );
+
+                    if (!existingClient) {
+                        const cachedClientsById = await getAllFromOfflineDB('cachedClients');
+                        existingClient = (cachedClientsById || []).find(c =>
+                            c && c.spx_tn != null && String(c.spx_tn) === spxToCheck
+                        );
+                    }
+
+                    if (existingClient) {
+                        return existingClient;
+                    }
+                } catch (e) {
+                    // ignora e segue para match por endereço
+                }
+            }
+
 
             // PASSO 1: Verifica cache local PRIMEIRO (instantâneo)
             try {
@@ -14563,7 +14589,8 @@
 
                     // Usa APENAS cache local para verificar se já está cadastrado
                     const existingClient = await findExistingClientFast(addressToCheck, {
-                        skipOnline: true  // Pula busca online - resposta instantânea
+                        skipOnline: true,  // Pula busca online - resposta instantânea
+                        spx_tn: qrData     // Identificador do QR para detectar cadastros offline
                     });
 
                     if (existingClient) {
@@ -15039,7 +15066,9 @@
                 city: currentRecord.city || null,
                 zipcode: currentRecord.zipcode || null,
                 latitude: coordinates.latitude,
-                longitude: coordinates.longitude
+                longitude: coordinates.longitude,
+                // Identificador do QR (para reconhecer cadastros offline mesmo com variações de endereço)
+                spx_tn: (currentRecord.spx_tn ?? currentRecord.spxTN ?? null)
             };
 
             // Guarda o endereço original do cliente para atualização do marcador
