@@ -8698,7 +8698,7 @@
                     }
 
                     showQuickSuccess();
-                    await removeSingleClientFromUI(id);
+                    await removeSingleClientFromUI(id, address);
                     updateOfflineIndicator();
                     return;
                 }
@@ -8708,7 +8708,7 @@
                     // Cliente offline que ainda não foi sincronizado - apenas remove localmente
                     await removeOfflineClientById(id, address);
                     showQuickSuccess();
-                    await removeSingleClientFromUI(id);
+                    await removeSingleClientFromUI(id, address);
                     return;
                 }
 
@@ -8723,7 +8723,7 @@
                 showQuickSuccess();
 
                 // PERFORMANCE: Remove incrementalmente em vez de recarregar tudo
-                await removeSingleClientFromUI(id);
+                await removeSingleClientFromUI(id, address);
             } catch (error) {
                 ErrorHandler.handle(error, { action: 'deleteCliente', id }, {
                     customMessage: 'Erro ao excluir cliente. Tente novamente.'
@@ -9246,7 +9246,7 @@
         }
 
         // PERFORMANCE: Remove um único cliente da UI e caches sem recarregar tudo
-        async function removeSingleClientFromUI(clientId) {
+        async function removeSingleClientFromUI(clientId, clientAddress = null) {
             try {
                 // Converte para string para comparação consistente
                 const clientIdStr = String(clientId);
@@ -9260,7 +9260,12 @@
                     removedClient = allClientes.find(c => String(c.id) === clientIdStr);
                 }
 
-                // 1. Remover do cache em memória
+                
+                // Fallback: se não achou pelo ID (ex.: inconsistência de ID offline), tenta usar o endereço informado
+                if (!removedClient && clientAddress) {
+                    removedClient = { address: clientAddress };
+                }
+// 1. Remover do cache em memória
                 if (clientesCache.data) {
                     clientesCache.data = clientesCache.data.filter(c => String(c.id) !== clientIdStr);
                     clientesCache.timestamp = Date.now();
@@ -9326,7 +9331,23 @@
                 const currentData = source._data;
                 const features = currentData.features || [];
 
-                const normalizedDeletedAddr = normalizeAddressForComparison(deletedClient.address);
+                // Endereços candidatos para match (cobre casos offline/QR/lista manual e diferenças de formatação)
+                const candidateAddrsRaw = [
+                    deletedClient && deletedClient.address ? String(deletedClient.address) : '',
+                    deletedClient && deletedClient.matchedClientAddress ? String(deletedClient.matchedClientAddress) : '',
+                    deletedClient && deletedClient.destination_address ? String(deletedClient.destination_address) : '',
+                    deletedClient && deletedClient.destinationAddress ? String(deletedClient.destinationAddress) : '',
+                ].filter(Boolean);
+
+                // Se não há endereço, não há como reverter de forma segura
+                if (candidateAddrsRaw.length === 0) return;
+
+                const normalizedCandidates = candidateAddrsRaw
+                    .map(a => normalizeAddressForComparison(a))
+                    .filter(Boolean);
+
+                const normalizedDeletedAddr = normalizedCandidates[0];
+
                 let updated = false;
                 const iconsToGenerate = new Set();
 
@@ -9351,12 +9372,28 @@
                     const featureAddr = props.address || '';
                     const normalizedFeatureAddr = normalizeAddressForComparison(featureAddr);
 
-                    let isMatch = normalizedFeatureAddr === normalizedDeletedAddr;
+                    // Match por: endereço principal, allAddresses, matchedClientAddress e addressSequencePairs
+                    let isMatch = normalizedCandidates.includes(normalizedFeatureAddr);
+
                     if (!isMatch && props.allAddresses) {
                         const allAddrs = props.allAddresses.split('|||');
-                        isMatch = allAddrs.some(addr =>
-                            normalizeAddressForComparison(addr) === normalizedDeletedAddr
-                        );
+                        isMatch = allAddrs.some(addr => normalizedCandidates.includes(normalizeAddressForComparison(addr)));
+                    }
+
+                    if (!isMatch && props.matchedClientAddress) {
+                        const normMatched = normalizeAddressForComparison(String(props.matchedClientAddress));
+                        if (normalizedCandidates.includes(normMatched)) isMatch = true;
+                    }
+
+                    if (!isMatch && props.addressSequencePairs) {
+                        try {
+                            const pairs = typeof props.addressSequencePairs === 'string'
+                                ? JSON.parse(props.addressSequencePairs)
+                                : props.addressSequencePairs;
+                            if (Array.isArray(pairs)) {
+                                isMatch = pairs.some(p => normalizedCandidates.includes(normalizeAddressForComparison(String(p.address || ''))));
+                            }
+                        } catch (e) {}
                     }
 
                     if (isMatch && props.isRegistered) {
