@@ -9006,7 +9006,10 @@
                                         allAddresses: clientData.address,
                                         addressSequencePairs: JSON.stringify(matchingItems.map(i => ({
                                             address: i.destination_address,
-                                            sequence: i.sequence
+                                            sequence: i.sequence,
+                                            bairro: i.bairro || '',
+                                            zipcode: i.zipcode || '',
+                                            matchType: 'exact' // Novo marcador criado após cadastro = exato
                                         }))),
                                         sequences: sequences,
                                         isRegistered: true,
@@ -9259,6 +9262,61 @@
                         updated = true;
                         const packageCount = props.packageCount || 1;
 
+                        // NOVO: Atualiza addressSequencePairs para marcar o endereço excluído
+                        let updatedAddressSequencePairs = props.addressSequencePairs;
+                        let remainingExactCount = 0;
+                        let hasSimilarityAddresses = false;
+
+                        if (props.addressSequencePairs) {
+                            try {
+                                let pairs = typeof props.addressSequencePairs === 'string'
+                                    ? JSON.parse(props.addressSequencePairs)
+                                    : props.addressSequencePairs;
+
+                                // Reverte o matchType do endereço excluído para o estado original
+                                pairs = pairs.map(pair => {
+                                    const pairNormalized = normalizeAddressForComparison(pair.address);
+                                    if (pairNormalized === normalizedDeletedAddr) {
+                                        // Volta para similarity ou null baseado no previousMatchType
+                                        return {
+                                            ...pair,
+                                            matchType: props.previousMatchType || null
+                                        };
+                                    }
+                                    return pair;
+                                });
+
+                                // Conta quantos endereços ainda estão cadastrados (exact)
+                                remainingExactCount = pairs.filter(p => p.matchType === 'exact').length;
+                                hasSimilarityAddresses = pairs.some(p => p.matchType === 'similarity' || p.matchType === null);
+
+                                updatedAddressSequencePairs = JSON.stringify(pairs);
+                            } catch (e) {
+                                // Mantém o original se der erro
+                            }
+                        }
+
+                        // Se ainda há endereços cadastrados no grupo, mantém o marcador atualizado
+                        if (remainingExactCount > 0) {
+                            // Ainda há endereços cadastrados - atualiza apenas o addressSequencePairs
+                            // A cor depende se há endereços não cadastrados
+                            const newColor = hasSimilarityAddresses ? 'purple' : 'green';
+                            const newIconId = `pin-${newColor}-${packageCount}`;
+                            iconsToGenerate.add(newIconId);
+
+                            return {
+                                ...feature,
+                                properties: {
+                                    ...props,
+                                    matchType: hasSimilarityAddresses ? 'similarity' : 'exact',
+                                    icon: newIconId,
+                                    addressSequencePairs: updatedAddressSequencePairs
+                                }
+                            };
+                        }
+
+                        // Nenhum endereço cadastrado restante - volta ao estado original
+
                         // PRIORIDADE 1: Verificar se tinha estado anterior salvo (similaridade/roxo)
                         if (props.previousMatchType === 'similarity' && props.previousCoordinates) {
                             try {
@@ -9280,6 +9338,7 @@
                                         icon: newIconId,
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
+                                        addressSequencePairs: updatedAddressSequencePairs,
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -9310,6 +9369,7 @@
                                     icon: newIconId,
                                     latitude: planilhaItem.latitude,
                                     longitude: planilhaItem.longitude,
+                                    addressSequencePairs: updatedAddressSequencePairs,
                                     // Limpa dados salvos
                                     previousMatchType: null,
                                     previousMatchedClientAddress: null,
@@ -9339,6 +9399,7 @@
                                         icon: newIconId,
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
+                                        addressSequencePairs: updatedAddressSequencePairs,
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
