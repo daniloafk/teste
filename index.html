@@ -4887,19 +4887,37 @@
 
         // Count pending items in a store
         function countPendingItems(storeName) {
-            return new Promise((resolve, reject) => {
+            return new Promise((resolve) => {
                 if (!offlineDB) {
                     resolve(0);
                     return;
                 }
 
-                const transaction = offlineDB.transaction([storeName], 'readonly');
-                const store = transaction.objectStore(storeName);
-                const index = store.index('synced');
-                const request = index.count(IDBKeyRange.only(0)); // 0 = false (não sincronizado)
+                try {
+                    const transaction = offlineDB.transaction([storeName], 'readonly');
+                    const store = transaction.objectStore(storeName);
 
-                request.onsuccess = () => resolve(request.result);
-                request.onerror = () => reject(request.error);
+                    // Prefer index 'synced' when available
+                    if (store.indexNames && store.indexNames.contains('synced')) {
+                        const index = store.index('synced');
+                        const request = index.count(IDBKeyRange.only(0)); // 0 = false (não sincronizado)
+
+                        request.onsuccess = () => resolve(request.result || 0);
+                        request.onerror = () => resolve(0);
+                    } else {
+                        // Fallback: count by filtering all
+                        const allRequest = store.getAll();
+                        allRequest.onsuccess = () => {
+                            const all = allRequest.result || [];
+                            const pending = all.filter(item => item.synced === 0 || item.synced === false || item.synced === undefined);
+                            resolve(pending.length);
+                        };
+                        allRequest.onerror = () => resolve(0);
+                    }
+                } catch (error) {
+                    // Store doesn't exist (older DB) or other transaction error
+                    resolve(0);
+                }
             });
         }
 
@@ -6323,7 +6341,15 @@
                     const pendingClients = await countPendingItems('pendingClients');
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0;
+                    const pendingDeletes = await countPendingItems('pendingDeletes');
+                    const pendingSimilarity = await countPendingItems('pendingSimilarityOverrides');
+
+                    const hasPendingData =
+                        pendingClients > 0 ||
+                        pendingPlanilha > 0 ||
+                        pendingStatus > 0 ||
+                        pendingDeletes > 0 ||
+                        pendingSimilarity > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
