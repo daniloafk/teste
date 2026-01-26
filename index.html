@@ -9347,6 +9347,26 @@
                     .filter(Boolean);
 
                 const normalizedDeletedAddr = normalizedCandidates[0];
+                const deletedAddrRaw = candidateAddrsRaw[0] || '';
+                const deletedAddrComponents = extractAddressComponentsSimple(deletedAddrRaw);
+
+                // Match semântico de endereço (normalizado OU rua+número)
+                function addressesSemanticallyMatch(a, b) {
+                    const na = normalizeAddressForComparison(a || '');
+                    const nb = normalizeAddressForComparison(b || '');
+                    if (na && nb && na === nb) return true;
+
+                    const ca = extractAddressComponentsSimple(a || '');
+                    const cb = extractAddressComponentsSimple(b || '');
+                    return !!(ca.primary && cb.primary && ca.number && cb.number &&
+                              ca.primary === cb.primary && ca.number === cb.number);
+                }
+
+                function matchesAnyCandidate(addr) {
+                    if (!addr) return false;
+                    return candidateAddrsRaw.some(c => addressesSemanticallyMatch(addr, c));
+                }
+
 
                 let updated = false;
                 const iconsToGenerate = new Set();
@@ -9358,8 +9378,7 @@
                     if (cachedPlanilha && cachedPlanilha.length > 0) {
                         planilhaItem = cachedPlanilha.find(item => {
                             if (!item.destination_address) return false;
-                            const normalizedItemAddr = normalizeAddressForComparison(item.destination_address);
-                            return normalizedItemAddr === normalizedDeletedAddr;
+                            return matchesAnyCandidate(item.destination_address);
                         });
                     }
                 } catch (e) {}
@@ -9381,8 +9400,7 @@
                     }
 
                     if (!isMatch && props.matchedClientAddress) {
-                        const normMatched = normalizeAddressForComparison(String(props.matchedClientAddress));
-                        if (normalizedCandidates.includes(normMatched)) isMatch = true;
+                        if (matchesAnyCandidate(String(props.matchedClientAddress))) isMatch = true;
                     }
 
                     if (!isMatch && props.addressSequencePairs) {
@@ -9391,7 +9409,7 @@
                                 ? JSON.parse(props.addressSequencePairs)
                                 : props.addressSequencePairs;
                             if (Array.isArray(pairs)) {
-                                isMatch = pairs.some(p => normalizedCandidates.includes(normalizeAddressForComparison(String(p.address || ''))));
+                                isMatch = pairs.some(p => matchesAnyCandidate(String(p.address || '')));
                             }
                         } catch (e) {}
                     }
@@ -9413,8 +9431,7 @@
 
                                 // Reverte o matchType do endereço excluído para o estado original
                                 pairs = pairs.map(pair => {
-                                    const pairNormalized = normalizeAddressForComparison(pair.address);
-                                    if (pairNormalized === normalizedDeletedAddr) {
+                                    if (matchesAnyCandidate(pair.address)) {
                                         // Volta para similarity ou null baseado no previousMatchType
                                         return {
                                             ...pair,
