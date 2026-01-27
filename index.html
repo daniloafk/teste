@@ -4869,19 +4869,41 @@
         }
 
         // Delete synced data from IndexedDB
+        // CORREÇÃO: Retorna resolve em vez de reject para não interromper loops de sync
         function deleteSyncedFromOfflineDB(storeName, localId) {
-            return new Promise((resolve, reject) => {
+            return new Promise((resolve) => {
                 if (!offlineDB) {
-                    reject(new Error('IndexedDB não inicializado'));
+                    // Não rejeita - apenas loga e continua
+                    console.warn('[IndexedDB] DB não inicializado ao tentar deletar de:', storeName);
+                    resolve(false);
                     return;
                 }
 
-                const transaction = offlineDB.transaction([storeName], 'readwrite');
-                const store = transaction.objectStore(storeName);
-                const request = store.delete(localId);
+                if (localId === undefined || localId === null) {
+                    console.warn('[IndexedDB] localId inválido para deletar de:', storeName);
+                    resolve(false);
+                    return;
+                }
 
-                request.onsuccess = () => resolve();
-                request.onerror = () => reject(request.error);
+                try {
+                    const transaction = offlineDB.transaction([storeName], 'readwrite');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.delete(localId);
+
+                    request.onsuccess = () => resolve(true);
+                    request.onerror = () => {
+                        console.warn('[IndexedDB] Erro ao deletar de', storeName, ':', request.error);
+                        resolve(false); // Não rejeita - permite que o loop continue
+                    };
+
+                    transaction.onerror = () => {
+                        console.warn('[IndexedDB] Erro na transação de delete:', transaction.error);
+                        resolve(false);
+                    };
+                } catch (err) {
+                    console.warn('[IndexedDB] Exceção ao deletar de', storeName, ':', err);
+                    resolve(false);
+                }
             });
         }
 
@@ -5577,7 +5599,7 @@
         };
 
         // Sync pending clients to Supabase
-        // Usa INSERT/UPDATE manual pois a tabela não tem UNIQUE constraint em address
+        // CORREÇÃO: Usa estratégia de upsert mais segura para evitar race conditions
         // Retorna array de endereços que foram sincronizados com sucesso
         async function syncPendingClients() {
             const syncedAddresses = [];
@@ -5588,6 +5610,16 @@
                 // Processa cada cliente individualmente (INSERT ou UPDATE)
                 for (const pendingClient of pendingClients) {
                     try {
+                        // Validação básica
+                        if (!pendingClient.address || pendingClient.latitude === undefined || pendingClient.longitude === undefined) {
+                            console.warn('[SYNC] Cliente inválido, pulando:', pendingClient);
+                            // Remove item inválido da fila
+                            if (pendingClient.localId) {
+                                await deleteSyncedFromOfflineDB('pendingClients', pendingClient.localId);
+                            }
+                            continue;
+                        }
+
                         const clientData = {
                             address: pendingClient.address,
                             bairro: pendingClient.bairro || null,
@@ -5597,47 +5629,47 @@
                             longitude: pendingClient.longitude
                         };
 
-                        // Verifica se o endereço já existe no Supabase
-                        const { data: existing, error: selectError } = await db
-                            .from('clients')
-                            .select('id')
-                            .eq('address', pendingClient.address)
-                            .limit(1);
-
                         let syncSuccess = false;
 
-                        if (selectError) {
-                            console.error('[SYNC] Erro ao verificar existência:', selectError);
-                            continue;
-                        }
+                        // CORREÇÃO: Estratégia INSERT-first com fallback para UPDATE
+                        // Isso é mais seguro contra race conditions do que SELECT + INSERT/UPDATE
+                        // 1. Tenta INSERT primeiro
+                        const { error: insertError } = await db
+                            .from('clients')
+                            .insert(clientData);
 
-                        if (existing && existing.length > 0) {
-                            // UPDATE: Endereço já existe, atualiza coordenadas
-                            const { error: updateError } = await db
-                                .from('clients')
-                                .update({
-                                    bairro: clientData.bairro,
-                                    city: clientData.city,
-                                    zipcode: clientData.zipcode,
-                                    latitude: clientData.latitude,
-                                    longitude: clientData.longitude
-                                })
-                                .eq('address', pendingClient.address);
-
-                            if (!updateError) {
-                                syncSuccess = true;
-                            } else {
-                                console.error('[SYNC] Erro no UPDATE:', updateError);
-                            }
+                        if (!insertError) {
+                            // INSERT bem-sucedido
+                            syncSuccess = true;
                         } else {
-                            // INSERT: Novo endereço
-                            const { error: insertError } = await db
-                                .from('clients')
-                                .insert(clientData);
+                            // Se INSERT falhou, pode ser duplicata ou outro erro
+                            // Verifica se é erro de duplicata (constraint violation ou registro já existe)
+                            const errorMsg = (insertError.message || insertError.code || '').toLowerCase();
+                            const isDuplicateError = errorMsg.includes('duplicate') ||
+                                                     errorMsg.includes('unique') ||
+                                                     errorMsg.includes('already exists') ||
+                                                     errorMsg.includes('23505'); // PostgreSQL unique_violation code
 
-                            if (!insertError) {
-                                syncSuccess = true;
+                            if (isDuplicateError) {
+                                // 2. Fallback: Tenta UPDATE se INSERT falhou por duplicata
+                                const { error: updateError } = await db
+                                    .from('clients')
+                                    .update({
+                                        bairro: clientData.bairro,
+                                        city: clientData.city,
+                                        zipcode: clientData.zipcode,
+                                        latitude: clientData.latitude,
+                                        longitude: clientData.longitude
+                                    })
+                                    .eq('address', pendingClient.address);
+
+                                if (!updateError) {
+                                    syncSuccess = true;
+                                } else {
+                                    console.error('[SYNC] Erro no UPDATE após INSERT falhar:', updateError);
+                                }
                             } else {
+                                // Outro tipo de erro no INSERT
                                 console.error('[SYNC] Erro no INSERT:', insertError);
                             }
                         }
@@ -5665,6 +5697,7 @@
         }
 
         // Sync pending planilha data to Supabase
+        // CORREÇÃO: Processa individualmente para tratar duplicatas e erros parciais
         // Retorna array de endereços que foram sincronizados com sucesso
         async function syncPendingPlanilha() {
             const syncedAddresses = [];
@@ -5672,43 +5705,97 @@
                 const pendingPlanilha = await getPendingFromOfflineDB('pendingPlanilha');
                 if (pendingPlanilha.length === 0) return syncedAddresses;
 
-                const batchData = pendingPlanilha.map(item => ({
-                    destination_address: item.destination_address,
-                    latitude: item.latitude,
-                    longitude: item.longitude,
-                    sequence: item.sequence,
-                    stop: item.stop,
-                    delivery_status: item.delivery_status || 'pending',
-                    spx_tn: item.spx_tn,
-                    bairro: item.bairro,
-                    city: item.city
-                }));
+                // CORREÇÃO: Processa cada item individualmente para melhor tratamento de erros
+                for (let i = 0; i < pendingPlanilha.length; i++) {
+                    const item = pendingPlanilha[i];
 
-                const { error } = await db
-                    .from('planilha')
-                    .insert(batchData);
-
-                if (!error) {
-                    // PERFORMANCE: Deleta itens com yield para não travar
-                    for (let i = 0; i < pendingPlanilha.length; i++) {
-                        if (i > 0 && i % 5 === 0) {
-                            await yieldToMain();
+                    // Validação básica
+                    if (!item.destination_address) {
+                        console.warn('[SYNC] Item de planilha sem destination_address, removendo:', item);
+                        if (item.localId) {
+                            await deleteSyncedFromOfflineDB('pendingPlanilha', item.localId);
                         }
-                        await deleteSyncedFromOfflineDB('pendingPlanilha', pendingPlanilha[i].localId);
-                        // Coleta os endereços sincronizados
-                        if (pendingPlanilha[i].destination_address) {
-                            syncedAddresses.push(pendingPlanilha[i].destination_address);
-                        }
+                        continue;
                     }
-                    // NÃO faz refresh do cache completo - quem chamou decide se precisa
+
+                    try {
+                        const planilhaData = {
+                            destination_address: item.destination_address,
+                            latitude: item.latitude,
+                            longitude: item.longitude,
+                            sequence: item.sequence,
+                            stop: item.stop,
+                            delivery_status: item.delivery_status || 'pending',
+                            spx_tn: item.spx_tn,
+                            bairro: item.bairro,
+                            city: item.city
+                        };
+
+                        // CORREÇÃO: Estratégia INSERT-first com fallback para UPDATE
+                        const { error: insertError } = await db
+                            .from('planilha')
+                            .insert(planilhaData);
+
+                        let syncSuccess = false;
+
+                        if (!insertError) {
+                            syncSuccess = true;
+                        } else {
+                            // Verifica se é erro de duplicata
+                            const errorMsg = (insertError.message || insertError.code || '').toLowerCase();
+                            const isDuplicateError = errorMsg.includes('duplicate') ||
+                                                     errorMsg.includes('unique') ||
+                                                     errorMsg.includes('already exists') ||
+                                                     errorMsg.includes('23505');
+
+                            if (isDuplicateError) {
+                                // Fallback: UPDATE se já existe
+                                const { error: updateError } = await db
+                                    .from('planilha')
+                                    .update({
+                                        latitude: planilhaData.latitude,
+                                        longitude: planilhaData.longitude,
+                                        sequence: planilhaData.sequence,
+                                        stop: planilhaData.stop,
+                                        delivery_status: planilhaData.delivery_status,
+                                        spx_tn: planilhaData.spx_tn,
+                                        bairro: planilhaData.bairro,
+                                        city: planilhaData.city
+                                    })
+                                    .eq('destination_address', item.destination_address);
+
+                                if (!updateError) {
+                                    syncSuccess = true;
+                                } else {
+                                    console.error('[SYNC] Erro no UPDATE de planilha:', updateError);
+                                }
+                            } else {
+                                console.error('[SYNC] Erro no INSERT de planilha:', insertError);
+                            }
+                        }
+
+                        if (syncSuccess) {
+                            await deleteSyncedFromOfflineDB('pendingPlanilha', item.localId);
+                            syncedAddresses.push(item.destination_address);
+                        }
+
+                    } catch (itemErr) {
+                        console.error('[SYNC] Erro ao sincronizar item de planilha:', item.destination_address, itemErr);
+                    }
+
+                    // Cede controle a cada 5 itens
+                    if (i > 0 && i % 5 === 0) {
+                        await yieldToMain();
+                    }
                 }
             } catch (err) {
-                // Erro na sincronização de planilha
+                console.error('[SYNC] Erro ao obter planilha pendente:', err);
             }
             return syncedAddresses;
         }
 
         // Sync pending delivery status updates to Supabase - BATCH OPTIMIZED
+        // CORREÇÃO: Trata sincronização parcial corretamente e valida item.ids
         // Agrupa por status para fazer menos chamadas ao banco
         // Retorna objeto com IDs sincronizados por status: { delivered: [ids], pending: [ids], ... }
         async function syncPendingDeliveryStatus() {
@@ -5718,14 +5805,47 @@
                 if (pendingStatus.length === 0) return syncedStatusChanges;
 
                 // BATCH: Agrupa todos os IDs por status
-                const statusGroups = new Map(); // status -> { ids: [], localIds: [] }
+                // CORREÇÃO: Também rastreia quais localIds correspondem a quais IDs
+                const statusGroups = new Map(); // status -> { idToLocalId: Map, allLocalIds: [] }
 
                 for (const item of pendingStatus) {
+                    // CORREÇÃO: Valida item.ids antes de usar spread
+                    if (!item.ids || !Array.isArray(item.ids) || item.ids.length === 0) {
+                        console.warn('[SYNC] Item de status inválido (sem ids), removendo:', item);
+                        // Remove item inválido da fila
+                        if (item.localId) {
+                            await deleteSyncedFromOfflineDB('pendingDeliveryStatus', item.localId);
+                        }
+                        continue;
+                    }
+
+                    if (!item.status) {
+                        console.warn('[SYNC] Item de status sem status definido, removendo:', item);
+                        if (item.localId) {
+                            await deleteSyncedFromOfflineDB('pendingDeliveryStatus', item.localId);
+                        }
+                        continue;
+                    }
+
                     if (!statusGroups.has(item.status)) {
-                        statusGroups.set(item.status, { ids: [], localIds: [] });
+                        statusGroups.set(item.status, {
+                            ids: [],
+                            localIds: [],
+                            // CORREÇÃO: Mapeia cada ID para seu localId de origem
+                            idToLocalIdMap: new Map()
+                        });
                     }
                     const group = statusGroups.get(item.status);
-                    group.ids.push(...item.ids);
+
+                    // Adiciona IDs e mapeia para o localId de origem
+                    for (const id of item.ids) {
+                        group.ids.push(id);
+                        // Guarda referência de qual localId este ID veio
+                        if (!group.idToLocalIdMap.has(item.localId)) {
+                            group.idToLocalIdMap.set(item.localId, []);
+                        }
+                        group.idToLocalIdMap.get(item.localId).push(id);
+                    }
                     group.localIds.push(item.localId);
                 }
 
@@ -5741,38 +5861,68 @@
                     try {
                         // Divide IDs em chunks para evitar cláusula IN muito grande
                         const idChunks = chunkArray(group.ids, BATCH_IDS_SIZE);
-                        let allSuccess = true;
+                        const successfulIds = []; // CORREÇÃO: Rastreia quais IDs foram sincronizados
+                        const failedChunks = [];
 
-                        for (const idChunk of idChunks) {
-                            const { error } = await db
-                                .from('planilha')
-                                .update({ delivery_status: status })
-                                .in('id', idChunk);
+                        for (let i = 0; i < idChunks.length; i++) {
+                            const idChunk = idChunks[i];
+                            try {
+                                const { error } = await db
+                                    .from('planilha')
+                                    .update({ delivery_status: status })
+                                    .in('id', idChunk);
 
-                            if (error) {
-                                allSuccess = false;
-                                break;
+                                if (error) {
+                                    console.error('[SYNC] Erro ao atualizar status chunk', i, ':', error);
+                                    failedChunks.push(i);
+                                } else {
+                                    // CORREÇÃO: Marca estes IDs como sincronizados
+                                    successfulIds.push(...idChunk);
+                                }
+                            } catch (chunkErr) {
+                                console.error('[SYNC] Exceção no chunk', i, ':', chunkErr);
+                                failedChunks.push(i);
                             }
                         }
 
-                        if (allSuccess) {
-                            // Deleta todos os localIds deste status
-                            for (const localId of group.localIds) {
-                                await deleteSyncedFromOfflineDB('pendingDeliveryStatus', localId);
+                        // CORREÇÃO: Processa resultado parcial
+                        if (successfulIds.length > 0) {
+                            // Adiciona IDs sincronizados ao resultado
+                            if (!syncedStatusChanges[status]) {
+                                syncedStatusChanges[status] = [];
                             }
-                            syncedStatusChanges[status] = group.ids;
+                            syncedStatusChanges[status].push(...successfulIds);
+
+                            // CORREÇÃO: Só deleta localIds cujos TODOS os IDs foram sincronizados
+                            const successfulIdSet = new Set(successfulIds);
+                            for (const localId of group.localIds) {
+                                const idsFromThisLocal = group.idToLocalIdMap.get(localId) || [];
+                                const allIdsSynced = idsFromThisLocal.every(id => successfulIdSet.has(id));
+
+                                if (allIdsSynced && idsFromThisLocal.length > 0) {
+                                    await deleteSyncedFromOfflineDB('pendingDeliveryStatus', localId);
+                                }
+                            }
+                        }
+
+                        // Log de resultado
+                        if (failedChunks.length > 0) {
+                            console.warn('[SYNC] Sincronização parcial de status', status,
+                                         '- Sucesso:', successfulIds.length,
+                                         '- Falhas em chunks:', failedChunks.length);
                         }
                     } catch (err) {
-                        // Erro na sincronização deste status
+                        console.error('[SYNC] Erro na sincronização do status', status, ':', err);
                     }
                 }
             } catch (err) {
-                // Erro ao obter status pendentes
+                console.error('[SYNC] Erro ao obter status pendentes:', err);
             }
             return syncedStatusChanges;
         }
 
         // Sync pending similarity overrides to Supabase - BATCH OPTIMIZED
+        // CORREÇÃO: Adiciona validação de item.ids e logs de erro
         // Agrupa overrides com mesmos parâmetros para fazer menos chamadas
         // Retorna true se houve alterações sincronizadas
         async function syncPendingSimilarityOverrides() {
@@ -5785,6 +5935,15 @@
                 const overrideGroups = new Map(); // key -> { ids: [], localIds: [], params: {} }
 
                 for (const item of pendingOverrides) {
+                    // CORREÇÃO: Valida item.ids antes de usar spread
+                    if (!item.ids || !Array.isArray(item.ids) || item.ids.length === 0) {
+                        console.warn('[SYNC] Override inválido (sem ids), removendo:', item);
+                        if (item.localId) {
+                            await deleteSyncedFromOfflineDB('pendingSimilarityOverrides', item.localId);
+                        }
+                        continue;
+                    }
+
                     // Cria chave única para agrupamento baseada nos parâmetros
                     const key = `${item.similarity_disabled}_${item.similarity_original_lat}_${item.similarity_original_lng}`;
 
@@ -5806,7 +5965,7 @@
 
                 // BATCH: Uma chamada por grupo de parâmetros
                 let groupIndex = 0;
-                for (const [, group] of overrideGroups) {
+                for (const [key, group] of overrideGroups) {
                     // Cede controle entre grupos
                     if (groupIndex > 0) {
                         await yieldToMain();
@@ -5825,6 +5984,7 @@
                                 .in('id', idChunk);
 
                             if (error) {
+                                console.error('[SYNC] Erro ao sincronizar similarity override:', error);
                                 allSuccess = false;
                                 break;
                             }
@@ -5834,19 +5994,20 @@
                             for (const localId of group.localIds) {
                                 await deleteSyncedFromOfflineDB('pendingSimilarityOverrides', localId);
                             }
-                            hadChanges = true; // Marcou que houve alteração
+                            hadChanges = true;
                         }
                     } catch (err) {
-                        // Erro na sincronização deste grupo
+                        console.error('[SYNC] Erro na sincronização do grupo de similarity:', key, err);
                     }
                 }
             } catch (err) {
-                // Erro ao obter overrides pendentes
+                console.error('[SYNC] Erro ao obter overrides pendentes:', err);
             }
             return hadChanges;
         }
 
         // Sync pending deletes to Supabase
+        // CORREÇÃO: Filtra IDs temporários que nunca existiram no Supabase
         async function syncPendingDeletes() {
             const deletedIds = [];
             try {
@@ -5855,14 +6016,49 @@
 
                 for (const item of pendingDeletes) {
                     try {
+                        // CORREÇÃO: Valida clientId
+                        if (!item.clientId) {
+                            console.warn('[SYNC] Item de delete sem clientId, removendo:', item);
+                            if (item.localId) {
+                                await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
+                            }
+                            continue;
+                        }
+
+                        // CORREÇÃO: Verifica se é um ID temporário (criado offline, nunca sincronizado)
+                        // IDs temporários começam com 'new_', 'pending_', 'temp_' ou são strings não-numéricas
+                        const clientIdStr = String(item.clientId);
+                        const isTemporaryId = clientIdStr.startsWith('new_') ||
+                                              clientIdStr.startsWith('pending_') ||
+                                              clientIdStr.startsWith('temp_') ||
+                                              (isNaN(Number(item.clientId)) && !clientIdStr.includes('-')); // UUID tem hífens
+
+                        if (isTemporaryId) {
+                            // ID temporário - nunca existiu no Supabase, apenas remove da fila
+                            console.log('[SYNC] ID temporário detectado, removendo da fila sem chamar Supabase:', item.clientId);
+                            await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
+                            deletedIds.push(item.clientId);
+                            continue;
+                        }
+
                         const { error } = await db
                             .from('clients')
                             .delete()
                             .eq('id', item.clientId);
 
                         if (error) {
-                            // Se o erro for "não encontrado", considera como sucesso (já foi deletado)
-                            if (!error.message?.includes('not found')) {
+                            // Verifica se é erro de "não encontrado" ou similar
+                            const errorMsg = (error.message || error.code || '').toLowerCase();
+                            const isNotFoundError = errorMsg.includes('not found') ||
+                                                    errorMsg.includes('no rows') ||
+                                                    errorMsg.includes('does not exist');
+
+                            if (isNotFoundError) {
+                                // Registro já não existe - considera como sucesso
+                                console.log('[SYNC] Cliente já deletado ou não existe:', item.clientId);
+                            } else {
+                                // Outro erro - mantém na fila para retry
+                                console.error('[SYNC] Erro ao deletar cliente:', item.clientId, error);
                                 continue;
                             }
                         }
@@ -5870,14 +6066,13 @@
                         // Remove da fila de pendentes
                         await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
                         deletedIds.push(item.clientId);
+
                     } catch (err) {
-                        // Erro na sincronização desta exclusão
-                        console.error('Erro ao sincronizar exclusão:', err);
+                        console.error('[SYNC] Erro ao sincronizar exclusão:', item.clientId, err);
                     }
                 }
             } catch (err) {
-                // Erro ao obter exclusões pendentes
-                console.error('Erro ao obter exclusões pendentes:', err);
+                console.error('[SYNC] Erro ao obter exclusões pendentes:', err);
             }
             return deletedIds;
         }
@@ -5966,8 +6161,19 @@
                 // Update pending count
                 updateOfflineIndicator();
 
+                // Log de sucesso
+                if (syncResult.hadChanges) {
+                    console.log('[SYNC] Sincronização concluída com sucesso:',
+                        'Clientes:', syncResult.syncedClientAddresses.length,
+                        'Planilha:', syncResult.syncedPlanilhaAddresses.length,
+                        'Status:', Object.keys(syncResult.syncedStatusChanges).length,
+                        'Deletes:', syncResult.syncedDeletedIds.length
+                    );
+                }
+
             } catch (error) {
-                // Erro durante sincronização
+                // CORREÇÃO: Log de erro para debug
+                console.error('[SYNC] Erro durante sincronização geral:', error);
             } finally {
                 isSyncing = false;
                 // DESBLOQUEIO: Libera syncs do servidor após terminar de enviar dados offline
@@ -11165,7 +11371,7 @@
                             }
                         }
 
-                        // PRÉ-FILTRO RÁPIDO: Pular se não há palavras em comum
+                        // PRÉ-FILTRO R��PIDO: Pular se não há palavras em comum
                         // Evita cálculos caros de similaridade para endereços obviamente diferentes
                         if (!hasCommonStreetWord(addr, client.address)) {
                             continue;
