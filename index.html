@@ -5938,11 +5938,10 @@
                     syncResult.syncedSimilarityChanges ||
                     syncResult.syncedDeletedIds.length > 0;
 
-                // IMPORTANTE: Se houve mudanças de status, similarity OU exclusões, atualiza o route_markers_cache no Supabase
+                // IMPORTANTE: Se houve mudanças de status OU similarity, atualiza o route_markers_cache no Supabase
                 // Isso garante que outros dispositivos recebam as alterações via polling de versão
                 const hasStatusOrSimilarityChanges = Object.keys(syncResult.syncedStatusChanges).length > 0 || syncResult.syncedSimilarityChanges;
-                const hasDeleteChanges = syncResult.syncedDeletedIds.length > 0;
-                if ((hasStatusOrSimilarityChanges || hasDeleteChanges) && map && map.getSource('route-stops')) {
+                if (hasStatusOrSimilarityChanges && map && map.getSource('route-stops')) {
                     try {
                         const source = map.getSource('route-stops');
                         if (source && source._data) {
@@ -5957,7 +5956,7 @@
                             };
                             // Salva no Supabase com nova versão para outros dispositivos detectarem
                             await _doSaveRouteMarkersToSupabase(currentGeojson, stats);
-                            console.log('☁️ route_markers_cache atualizado após sync offline (status/similarity/deletes)');
+                            console.log('☁️ route_markers_cache atualizado após sync de status offline');
                         }
                     } catch (cacheErr) {
                         console.log('⚠️ Erro ao atualizar route_markers_cache após sync:', cacheErr);
@@ -6263,54 +6262,9 @@
                     if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                         updateRouteMarkersStatus(syncResult.syncedStatusChanges);
                     }
-
-                    // Remove clientes excluídos do cache e atualiza marcadores
-                    if (syncResult.syncedDeletedIds.length > 0) {
-                        await removeSyncedDeletesFromCache(syncResult.syncedDeletedIds);
-                    }
                 }
             } catch (err) {
                 // Sync falhou silenciosamente
-            }
-        }
-
-        // PERFORMANCE: Remove clientes excluídos do cache e atualiza marcadores de rota
-        async function removeSyncedDeletesFromCache(deletedIds) {
-            if (!deletedIds || deletedIds.length === 0) return;
-
-            try {
-                // 1. Remove do cache em memória
-                if (clientesCache.data) {
-                    clientesCache.data = clientesCache.data.filter(c => !deletedIds.includes(c.id));
-                    clientesCache.timestamp = Date.now();
-                }
-
-                // 2. Remove de allClientes
-                if (allClientes) {
-                    allClientes = allClientes.filter(c => !deletedIds.includes(c.id));
-                }
-
-                // 3. Remove do IndexedDB cache
-                try {
-                    const cachedClients = await getAllFromOfflineDB('cachedClients');
-                    if (cachedClients && cachedClients.length > 0) {
-                        const filtered = cachedClients.filter(c => !deletedIds.includes(c.id));
-                        if (filtered.length !== cachedClients.length) {
-                            await saveCacheToDB('cachedClients', filtered);
-                        }
-                    }
-                } catch (e) {
-                    console.log('⚠️ Erro ao remover clientes excluídos do cache:', e);
-                }
-
-                // 4. Re-renderiza a lista de clientes na UI
-                if (allClientes && allClientes.length > 0) {
-                    renderClientes(allClientes);
-                }
-
-                console.log(`🗑️ ${deletedIds.length} cliente(s) excluído(s) removido(s) do cache local`);
-            } catch (err) {
-                console.log('⚠️ Erro ao remover exclusões do cache:', err);
             }
         }
 
@@ -6369,8 +6323,7 @@
                     const pendingClients = await countPendingItems('pendingClients');
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                    const pendingDeletes = await countPendingItems('pendingDeletes');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0;
+                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
@@ -6414,13 +6367,6 @@
                         if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                             await waitForIdle();
                             updateRouteMarkersStatus(syncResult.syncedStatusChanges);
-                        }
-
-                        // Step 3d: Remove clientes excluídos do cache e UI
-                        if (syncResult.syncedDeletedIds.length > 0) {
-                            await waitForIdle();
-                            await removeSyncedDeletesFromCache(syncResult.syncedDeletedIds);
-                            await longYield();
                         }
                     }
 
@@ -7336,10 +7282,9 @@
                         const pendingClients = await countPendingItems('pendingClients');
                         const pendingPlanilha = await countPendingItems('pendingPlanilha');
                         const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                        const pendingDeletes = await countPendingItems('pendingDeletes');
 
                         // Só sincroniza se houver dados pendentes
-                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0) {
+                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0) {
                             syncAllPendingData();
                         }
                     } catch (e) {
@@ -8937,6 +8882,9 @@
                         // 3. Já registrados (verde) mas com coordenadas diferentes - AJUSTE DE POSIÇÃO
                         if (!props.isRegistered || props.matchType === 'similarity' || coordsChanged) {
                             updated = true;
+                            const packageCount = props.packageCount || 1;
+                            const newIconId = `pin-green-${packageCount}`;
+                            iconsToGenerate.add(newIconId);
 
                             // Salva dados originais para permitir reversão após exclusão do cliente
                             // IMPORTANTE: Só salva previousCoordinates se ainda não existe (evita sobrescrever o original)
@@ -8944,57 +8892,6 @@
                             const previousMatchedClientAddress = props.previousMatchedClientAddress || props.matchedClientAddress || '';
                             const previousCoordinates = props.previousCoordinates || JSON.stringify(currentCoords);
                             const previousIsRegistered = props.previousIsRegistered !== undefined ? props.previousIsRegistered : (props.isRegistered || false);
-
-                            // Atualiza addressSequencePairs para marcar APENAS o endereço cadastrado como 'exact'
-                            let updatedAddressSequencePairs = props.addressSequencePairs;
-                            if (props.addressSequencePairs) {
-                                try {
-                                    let pairs = typeof props.addressSequencePairs === 'string'
-                                        ? JSON.parse(props.addressSequencePairs)
-                                        : props.addressSequencePairs;
-
-                                    // Atualiza o matchType do endereço cadastrado para 'exact'
-                                    pairs = pairs.map(pair => {
-                                        const pairNormalized = normalizeAddressForComparison(pair.address);
-                                        if (pairNormalized === normalizedNewAddr) {
-                                            return { ...pair, matchType: 'exact' };
-                                        }
-                                        return pair;
-                                    });
-
-                                    updatedAddressSequencePairs = JSON.stringify(pairs);
-                                } catch (e) {
-                                    // Mantém o original se der erro
-                                }
-                            }
-
-                            // Verifica se ainda há endereços não cadastrados no grupo
-                            // para determinar a cor correta do marcador
-                            let hasUnregisteredAddresses = false;
-                            let finalMatchType = 'exact';
-                            if (updatedAddressSequencePairs) {
-                                try {
-                                    const pairs = typeof updatedAddressSequencePairs === 'string'
-                                        ? JSON.parse(updatedAddressSequencePairs)
-                                        : updatedAddressSequencePairs;
-
-                                    // Se algum endereço não tem matchType 'exact', ainda há pendências
-                                    hasUnregisteredAddresses = pairs.some(pair =>
-                                        pair.matchType !== 'exact'
-                                    );
-
-                                    if (hasUnregisteredAddresses) {
-                                        // Mantém roxo se ainda há endereços por cadastrar
-                                        finalMatchType = 'similarity';
-                                    }
-                                } catch (e) {}
-                            }
-
-                            // Define a cor do marcador baseado no status
-                            const packageCount = props.packageCount || 1;
-                            const markerColor = hasUnregisteredAddresses ? 'purple' : 'green';
-                            const newIconId = `pin-${markerColor}-${packageCount}`;
-                            iconsToGenerate.add(newIconId);
 
                             return {
                                 ...feature,
@@ -9005,11 +8902,10 @@
                                 properties: {
                                     ...props,
                                     isRegistered: true,
-                                    matchType: finalMatchType,
+                                    matchType: 'exact',
                                     icon: newIconId,
                                     latitude: clientData.latitude,
                                     longitude: clientData.longitude,
-                                    addressSequencePairs: updatedAddressSequencePairs,
                                     // Salva estado anterior para reversão (preserva o original)
                                     previousMatchType: previousMatchType,
                                     previousMatchedClientAddress: previousMatchedClientAddress,
@@ -9061,10 +8957,7 @@
                                         allAddresses: clientData.address,
                                         addressSequencePairs: JSON.stringify(matchingItems.map(i => ({
                                             address: i.destination_address,
-                                            sequence: i.sequence,
-                                            bairro: i.bairro || '',
-                                            zipcode: i.zipcode || '',
-                                            matchType: 'exact' // Novo marcador criado após cadastro = exato
+                                            sequence: i.sequence
                                         }))),
                                         sequences: sequences,
                                         isRegistered: true,
@@ -9317,61 +9210,6 @@
                         updated = true;
                         const packageCount = props.packageCount || 1;
 
-                        // NOVO: Atualiza addressSequencePairs para marcar o endereço excluído
-                        let updatedAddressSequencePairs = props.addressSequencePairs;
-                        let remainingExactCount = 0;
-                        let hasSimilarityAddresses = false;
-
-                        if (props.addressSequencePairs) {
-                            try {
-                                let pairs = typeof props.addressSequencePairs === 'string'
-                                    ? JSON.parse(props.addressSequencePairs)
-                                    : props.addressSequencePairs;
-
-                                // Reverte o matchType do endereço excluído para o estado original
-                                pairs = pairs.map(pair => {
-                                    const pairNormalized = normalizeAddressForComparison(pair.address);
-                                    if (pairNormalized === normalizedDeletedAddr) {
-                                        // Volta para similarity ou null baseado no previousMatchType
-                                        return {
-                                            ...pair,
-                                            matchType: props.previousMatchType || null
-                                        };
-                                    }
-                                    return pair;
-                                });
-
-                                // Conta quantos endereços ainda estão cadastrados (exact)
-                                remainingExactCount = pairs.filter(p => p.matchType === 'exact').length;
-                                hasSimilarityAddresses = pairs.some(p => p.matchType === 'similarity' || p.matchType === null);
-
-                                updatedAddressSequencePairs = JSON.stringify(pairs);
-                            } catch (e) {
-                                // Mantém o original se der erro
-                            }
-                        }
-
-                        // Se ainda há endereços cadastrados no grupo, mantém o marcador atualizado
-                        if (remainingExactCount > 0) {
-                            // Ainda há endereços cadastrados - atualiza apenas o addressSequencePairs
-                            // A cor depende se há endereços não cadastrados
-                            const newColor = hasSimilarityAddresses ? 'purple' : 'green';
-                            const newIconId = `pin-${newColor}-${packageCount}`;
-                            iconsToGenerate.add(newIconId);
-
-                            return {
-                                ...feature,
-                                properties: {
-                                    ...props,
-                                    matchType: hasSimilarityAddresses ? 'similarity' : 'exact',
-                                    icon: newIconId,
-                                    addressSequencePairs: updatedAddressSequencePairs
-                                }
-                            };
-                        }
-
-                        // Nenhum endereço cadastrado restante - volta ao estado original
-
                         // PRIORIDADE 1: Verificar se tinha estado anterior salvo (similaridade/roxo)
                         if (props.previousMatchType === 'similarity' && props.previousCoordinates) {
                             try {
@@ -9393,7 +9231,6 @@
                                         icon: newIconId,
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
-                                        addressSequencePairs: updatedAddressSequencePairs,
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -9424,7 +9261,6 @@
                                     icon: newIconId,
                                     latitude: planilhaItem.latitude,
                                     longitude: planilhaItem.longitude,
-                                    addressSequencePairs: updatedAddressSequencePairs,
                                     // Limpa dados salvos
                                     previousMatchType: null,
                                     previousMatchedClientAddress: null,
@@ -9454,7 +9290,6 @@
                                         icon: newIconId,
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
-                                        addressSequencePairs: updatedAddressSequencePairs,
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -13930,11 +13765,14 @@
                     // - Roxos: isRegistered === true + matchType === 'similarity' (match por similaridade, não exato)
                     // NÃO inclui:
                     // - Verdes: isRegistered === true + matchType === 'exact' (já cadastrado exatamente)
-                    // NOTA: O status de entrega (delivered/not_delivered) NÃO afeta a lista de cadastro
-                    // Um endereço pode ser marcado como entregue mas ainda precisar ser cadastrado
+                    // - Finalizados: deliveryStatus === 'delivered' ou 'not_delivered'
                     const unregisteredAddresses = features
                         .filter(f => {
                             const props = f.properties;
+
+                            // Não finalizado
+                            const isNotDelivered = props.deliveryStatus !== 'delivered' && props.deliveryStatus !== 'not_delivered';
+                            if (!isNotDelivered) return false;
 
                             // Verifica se NÃO está cadastrado (vermelho)
                             const isNotRegistered = props.isRegistered === false || props.isRegistered === 'false' ||
@@ -14587,7 +14425,7 @@
             }
         }
 
-        // Handler para detectar fim de anima��ão do mapa
+        // Handler para detectar fim de animação do mapa
         function onMapMoveEnd() {
             if (isAdjustMode) {
                 isMapAnimating = false;
