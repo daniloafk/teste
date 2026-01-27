@@ -6007,12 +6007,13 @@
         }
 
         // Sync pending deletes to Supabase
-        // CORREÇÃO: Filtra IDs temporários que nunca existiram no Supabase
+        // CORREÇÃO: Filtra IDs temporários e retorna também endereços para atualizar marcadores
         async function syncPendingDeletes() {
-            const deletedIds = [];
+            // CORREÇÃO: Retorna array de objetos {id, address} para atualizar marcadores de rota
+            const deletedClients = [];
             try {
                 const pendingDeletes = await getPendingFromOfflineDB('pendingDeletes');
-                if (pendingDeletes.length === 0) return deletedIds;
+                if (pendingDeletes.length === 0) return deletedClients;
 
                 for (const item of pendingDeletes) {
                     try {
@@ -6037,7 +6038,11 @@
                             // ID temporário - nunca existiu no Supabase, apenas remove da fila
                             console.log('[SYNC] ID temporário detectado, removendo da fila sem chamar Supabase:', item.clientId);
                             await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
-                            deletedIds.push(item.clientId);
+                            // Ainda adiciona o endereço para atualizar marcadores
+                            deletedClients.push({
+                                id: item.clientId,
+                                address: item.clientAddress || null
+                            });
                             continue;
                         }
 
@@ -6065,7 +6070,11 @@
 
                         // Remove da fila de pendentes
                         await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
-                        deletedIds.push(item.clientId);
+                        // CORREÇÃO: Retorna objeto com ID e endereço
+                        deletedClients.push({
+                            id: item.clientId,
+                            address: item.clientAddress || null
+                        });
 
                     } catch (err) {
                         console.error('[SYNC] Erro ao sincronizar exclusão:', item.clientId, err);
@@ -6074,7 +6083,7 @@
             } catch (err) {
                 console.error('[SYNC] Erro ao obter exclusões pendentes:', err);
             }
-            return deletedIds;
+            return deletedClients;
         }
 
         // Main sync function - syncs all pending data
@@ -6085,7 +6094,8 @@
                 syncedPlanilhaAddresses: [],
                 syncedStatusChanges: {},
                 syncedSimilarityChanges: false,
-                syncedDeletedIds: [],
+                // CORREÇÃO: Agora é array de {id, address} para atualizar marcadores
+                syncedDeletedClients: [],
                 hadChanges: false
             };
 
@@ -6121,8 +6131,9 @@
                 await longYield();
 
                 // Sync pending deletes
-                const deletedIds = await syncPendingDeletes();
-                syncResult.syncedDeletedIds = deletedIds || [];
+                // CORREÇÃO: Agora retorna array de {id, address}
+                const deletedClients = await syncPendingDeletes();
+                syncResult.syncedDeletedClients = deletedClients || [];
                 await longYield();
 
                 // Verifica se houve alguma mudança
@@ -6131,7 +6142,7 @@
                     syncResult.syncedPlanilhaAddresses.length > 0 ||
                     Object.keys(syncResult.syncedStatusChanges).length > 0 ||
                     syncResult.syncedSimilarityChanges ||
-                    syncResult.syncedDeletedIds.length > 0;
+                    syncResult.syncedDeletedClients.length > 0;
 
                 // IMPORTANTE: Se houve mudanças de status OU similarity, atualiza o route_markers_cache no Supabase
                 // Isso garante que outros dispositivos recebam as alterações via polling de versão
@@ -6167,7 +6178,7 @@
                         'Clientes:', syncResult.syncedClientAddresses.length,
                         'Planilha:', syncResult.syncedPlanilhaAddresses.length,
                         'Status:', Object.keys(syncResult.syncedStatusChanges).length,
-                        'Deletes:', syncResult.syncedDeletedIds.length
+                        'Deletes:', syncResult.syncedDeletedClients.length
                     );
                 }
 
@@ -6261,6 +6272,120 @@
                 }
             } catch (err) {
                 // Erro ao atualizar marcadores - falha silenciosa
+            }
+        }
+
+        // CORREÇÃO: Atualiza marcadores de rota após exclusões de clientes sincronizadas
+        // Reverte marcadores para estado "não cadastrado" (amarelo/laranja) quando cliente é deletado
+        // Recebe array de {id, address} para encontrar marcadores pelo endereço
+        async function updateRouteMarkersAfterDeleteSync(deletedClients) {
+            if (!deletedClients || deletedClients.length === 0) return;
+            if (!map || !map.getSource || !map.getSource('route-stops')) return;
+
+            try {
+                console.log('[SYNC] Atualizando marcadores após exclusão de', deletedClients.length, 'cliente(s)');
+
+                const source = map.getSource('route-stops');
+                if (!source || !source._data) return;
+
+                const currentData = source._data;
+                if (!currentData || !currentData.features) return;
+
+                // Coleta endereços deletados normalizados para comparação
+                const deletedAddressesNormalized = new Set();
+                for (const client of deletedClients) {
+                    if (client.address) {
+                        deletedAddressesNormalized.add(normalizeAddressForComparison(client.address));
+                    }
+                }
+
+                if (deletedAddressesNormalized.size === 0) {
+                    console.log('[SYNC] Nenhum endereço para atualizar marcadores');
+                    return;
+                }
+
+                let updated = false;
+                const iconsToGenerate = new Set();
+
+                const updatedFeatures = currentData.features.map(feature => {
+                    const props = feature.properties;
+
+                    // Verifica se este marcador corresponde a um cliente deletado pelo endereço
+                    const markerAddress = props.address || props.allAddresses || '';
+                    const normalizedMarkerAddr = normalizeAddressForComparison(markerAddress);
+
+                    if (deletedAddressesNormalized.has(normalizedMarkerAddr)) {
+                        updated = true;
+
+                        // Determina o novo ícone baseado no status de entrega
+                        const packageCount = props.packageCount || 1;
+                        let newIconId;
+                        if (props.deliveryStatus === 'delivered') {
+                            newIconId = `pin-green-${Math.min(packageCount, 9)}`;
+                        } else if (props.deliveryStatus === 'not_delivered') {
+                            newIconId = `pin-red-${Math.min(packageCount, 9)}`;
+                        } else {
+                            newIconId = `pin-yellow-${Math.min(packageCount, 9)}`; // Pendente/não cadastrado
+                        }
+                        iconsToGenerate.add(newIconId);
+
+                        // Reverte para estado "não cadastrado"
+                        return {
+                            ...feature,
+                            properties: {
+                                ...props,
+                                isRegistered: false,
+                                matchType: null,
+                                matchedClientAddress: null,
+                                icon: newIconId
+                            }
+                        };
+                    }
+                    return feature;
+                });
+
+                if (updated) {
+                    // Gera ícones necessários antes de atualizar o mapa
+                    for (const iconId of iconsToGenerate) {
+                        if (!map.hasImage(iconId)) {
+                            try {
+                                const parts = iconId.split('-');
+                                const color = parts[1];
+                                const count = parseInt(parts[2]) || 1;
+                                const colorMap = { green: '#10B981', red: '#EF4444', yellow: '#F59E0B' };
+                                const img = await generatePinIcon(colorMap[color] || '#F59E0B', count);
+                                if (!map.hasImage(iconId)) {
+                                    map.addImage(iconId, img);
+                                }
+                            } catch (e) {
+                                console.warn('[SYNC] Erro ao gerar ícone:', iconId, e);
+                            }
+                        }
+                    }
+
+                    const newGeojson = {
+                        type: 'FeatureCollection',
+                        features: updatedFeatures
+                    };
+                    source.setData(newGeojson);
+
+                    // Atualiza stats
+                    const stats = {
+                        total: updatedFeatures.filter(f => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
+                        registered: updatedFeatures.filter(f => f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
+                        unregistered: updatedFeatures.filter(f => !f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
+                        pending: updatedFeatures.reduce((sum, f) => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered' ? sum + (f.properties.packageCount || 1) : sum, 0),
+                        delivered: updatedFeatures.reduce((sum, f) => f.properties.deliveryStatus === 'delivered' || f.properties.deliveryStatus === 'not_delivered' ? sum + (f.properties.packageCount || 1) : sum, 0)
+                    };
+
+                    // Salva no cache local e Supabase
+                    await saveRouteMarkersToCache(newGeojson, stats);
+                    updateFixedStatsPanel(stats);
+
+                    console.log('[SYNC] Marcadores atualizados após exclusão - revertidos:', deletedClients.length);
+                }
+            } catch (err) {
+                console.error('[SYNC] Erro ao atualizar marcadores após exclusão:', err);
             }
         }
 
@@ -6529,7 +6654,9 @@
                     const pendingClients = await countPendingItems('pendingClients');
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0;
+                    // CORREÇÃO: Adiciona pendingDeletes à verificação
+                    const pendingDeletes = await countPendingItems('pendingDeletes');
+                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
@@ -6573,6 +6700,13 @@
                         if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                             await waitForIdle();
                             updateRouteMarkersStatus(syncResult.syncedStatusChanges);
+                        }
+
+                        // CORREÇÃO: Step 3d: Atualiza marcadores de rota após exclusões sincronizadas
+                        if (syncResult.syncedDeletedClients && syncResult.syncedDeletedClients.length > 0) {
+                            await waitForIdle();
+                            await updateRouteMarkersAfterDeleteSync(syncResult.syncedDeletedClients);
+                            await longYield();
                         }
                     }
 
@@ -8795,8 +8929,10 @@
                         await removeOfflineClientById(id, address);
                     } else {
                         // Cliente do Supabase - salva exclusão para sincronizar depois
+                        // CORREÇÃO: Salva também o endereço para atualizar marcadores de rota após sync
                         await saveToOfflineDB('pendingDeletes', {
                             clientId: id,
+                            clientAddress: address, // Usado para encontrar marcador de rota
                             deletedAt: new Date().toISOString(),
                             synced: false
                         });
@@ -11371,7 +11507,7 @@
                             }
                         }
 
-                        // PRÉ-FILTRO R��PIDO: Pular se não há palavras em comum
+                        // PRÉ-FILTRO RÁPIDO: Pular se não há palavras em comum
                         // Evita cálculos caros de similaridade para endereços obviamente diferentes
                         if (!hasCommonStreetWord(addr, client.address)) {
                             continue;
