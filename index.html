@@ -8870,28 +8870,18 @@
 
                     if (isMatch) {
                         foundExisting = true;
-
-                        // Verifica se as coordenadas mudaram (para marcadores já verdes que precisam de atualização)
-                        const currentCoords = feature.geometry.coordinates;
-                        const coordsChanged = currentCoords[0] !== clientData.longitude ||
-                                              currentCoords[1] !== clientData.latitude;
-
-                        // Atualiza marcadores em 3 casos:
-                        // 1. Não registrados (vermelho) - cadastro novo
-                        // 2. Similaridade (roxo) - confirmação de match
-                        // 3. Já registrados (verde) mas com coordenadas diferentes - AJUSTE DE POSIÇÃO
-                        if (!props.isRegistered || props.matchType === 'similarity' || coordsChanged) {
+                        // Atualiza tanto marcadores não registrados (vermelho) quanto marcadores de similaridade (roxo)
+                        if (!props.isRegistered || props.matchType === 'similarity') {
                             updated = true;
                             const packageCount = props.packageCount || 1;
                             const newIconId = `pin-green-${packageCount}`;
                             iconsToGenerate.add(newIconId);
 
                             // Salva dados originais para permitir reversão após exclusão do cliente
-                            // IMPORTANTE: Só salva previousCoordinates se ainda não existe (evita sobrescrever o original)
-                            const previousMatchType = props.previousMatchType || props.matchType || null;
-                            const previousMatchedClientAddress = props.previousMatchedClientAddress || props.matchedClientAddress || '';
-                            const previousCoordinates = props.previousCoordinates || JSON.stringify(currentCoords);
-                            const previousIsRegistered = props.previousIsRegistered !== undefined ? props.previousIsRegistered : (props.isRegistered || false);
+                            const previousMatchType = props.matchType || null;
+                            const previousMatchedClientAddress = props.matchedClientAddress || '';
+                            const previousCoordinates = feature.geometry.coordinates;
+                            const previousIsRegistered = props.isRegistered || false;
 
                             return {
                                 ...feature,
@@ -8906,10 +8896,10 @@
                                     icon: newIconId,
                                     latitude: clientData.latitude,
                                     longitude: clientData.longitude,
-                                    // Salva estado anterior para reversão (preserva o original)
+                                    // Salva estado anterior para reversão
                                     previousMatchType: previousMatchType,
                                     previousMatchedClientAddress: previousMatchedClientAddress,
-                                    previousCoordinates: previousCoordinates,
+                                    previousCoordinates: JSON.stringify(previousCoordinates),
                                     previousIsRegistered: previousIsRegistered
                                 }
                             };
@@ -10775,15 +10765,7 @@
                     // Convert written numbers to digits (Dezesseis -> 16)
                     cleanAddr = convertWrittenNumbers(cleanAddr);
 
-                    // STEP 1: Protect highway codes BEFORE normalization
-                    // Matches: PA-391, BR-316, GO-020, SP-270, etc. (state/federal highways)
-                    // Also matches without hyphen: PA 391, BR 316
-                    // Preserves the full code as "RODOVIA_XX_NNN" placeholder
-                    cleanAddr = cleanAddr.replace(/\b(pa|br|go|mg|sp|rj|rs|pr|sc|ba|ce|pe|ma|pi|mt|ms|to|am|ac|ro|rr|ap|se|al|rn|pb|es|df)\s*[-]?\s*(\d{1,4})\b/gi,
-                        (match, state, num) => `RODOVIA_${state.toUpperCase()}_${num}`);
-
-                    // STEP 2: Apply standard normalizations
-                    cleanAddr = cleanAddr
+                    return cleanAddr
                         .toLowerCase()
                         .trim()
                         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove accents
@@ -10802,13 +10784,6 @@
                         .replace(/\b(santo|santa|sao|sta|sto)\b/gi, '') // Remove saint titles
                         .replace(/\s+/g, ' ')
                         .trim();
-
-                    // STEP 3: Restore highway codes in normalized format (lowercase, readable)
-                    // "rodovia_pa_391" -> "pa391" (compact identifier for comparison)
-                    cleanAddr = cleanAddr.replace(/rodovia_([a-z]{2})_(\d+)/gi,
-                        (match, state, num) => `${state.toLowerCase()}${num}`);
-
-                    return cleanAddr;
                 }
 
                 // Calculate distance between two coordinates in km
@@ -11065,15 +11040,8 @@
                 function extractStreetNameWords(addr) {
                     if (!addr) return [];
 
-                    // STEP 1: Protect highway codes BEFORE processing
-                    // Converts "PA-391", "BR-316", "PA 391" etc. to "pa391", "br316"
-                    let text = addr.replace(
-                        /\b(pa|br|go|mg|sp|rj|rs|pr|sc|ba|ce|pe|ma|pi|mt|ms|to|am|ac|ro|rr|ap|se|al|rn|pb|es|df)\s*[-]?\s*(\d{1,4})\b/gi,
-                        (match, state, num) => `${state.toLowerCase()}${num}`
-                    );
-
-                    // STEP 2: Normalize the address
-                    text = text
+                    // Normalize the address
+                    let text = addr
                         .toLowerCase()
                         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
                         .replace(/[.,;:\-\/\\()]/g, ' ') // Replace punctuation
@@ -11105,7 +11073,7 @@
                         .filter(w => {
                             // Must be at least 3 characters
                             if (w.length < 3) return false;
-                            // Must not be a pure number (but allow alphanumeric like "pa391")
+                            // Must not be a number
                             if (/^\d+$/.test(w)) return false;
                             // Must not be in exclude list
                             if (excludeWords.has(w)) return false;
@@ -11271,21 +11239,10 @@
 
                     // Se encontrou um match, determinar se foi exato ou por similaridade
                     if (bestMatch) {
-                        // Match exato: quando os endereços normalizados são IDÊNTICOS ou têm similaridade >= 99%
-                        // 99% tolera pequenas diferenças de formatação (espaços, pontuação)
-                        // mas ainda exige que sejam essencialmente o mesmo endereço
-                        // Endereços como "Rua X, 111" vs "Rua X, 111, Alameda Y" terão similaridade < 99%
+                        // Match exato: similarity >= 0.95 (endereços quase idênticos após normalização)
                         const normalizedBestClient = normalizeAddress(bestMatch.address);
-
-                        // Primeiro verifica igualdade estrita (mais rápido)
-                        let isExactMatch = normalizedAddr === normalizedBestClient;
-
-                        // Se não for igual, verifica se são muito similares (99%+)
-                        // para tolerar pequenas diferenças de formatação
-                        if (!isExactMatch) {
-                            const similarity = textSimilarity(normalizedAddr, normalizedBestClient);
-                            isExactMatch = similarity >= 0.99;
-                        }
+                        const finalSimilarity = textSimilarity(normalizedAddr, normalizedBestClient);
+                        const isExactMatch = finalSimilarity >= 0.95;
 
                         return {
                             client: bestMatch,
@@ -11547,7 +11504,7 @@
                     const ids = [];
                     const allAddresses = []; // Store all unique addresses in this group
                     const allAddressesWithDetails = []; // Store addresses with bairro/zipcode for matching
-                    const addressSequencePairsTemp = []; // Temporary storage for address+sequence pairs
+                    const addressSequencePairs = []; // Store address+sequence pairs
                     let deliveryStatus = null;
                     mergedItems.forEach(item => {
                         if (item.sequence && !sequences.includes(item.sequence)) {
@@ -11568,13 +11525,11 @@
                                 zipcode: item.zipcode
                             });
                         }
-                        // Store address+sequence pairs temporarily (matchType será adicionado depois)
+                        // Store address+sequence pairs for popup display
                         if (item.destination_address && item.sequence) {
-                            addressSequencePairsTemp.push({
+                            addressSequencePairs.push({
                                 address: item.destination_address,
-                                sequence: item.sequence,
-                                bairro: item.bairro,
-                                zipcode: item.zipcode
+                                sequence: item.sequence
                             });
                         }
                         // Use the first non-null delivery_status found
@@ -11586,29 +11541,13 @@
                     // Check if ANY address in this group has a registered client (Option 1: at least one)
                     // Collect ALL registered clients for this group, then cluster their coordinates
                     // PERFORMANCE: Usar cache para evitar recálculos
-                    // Também cria um mapa de matchType por endereço para uso na lista manual
                     const registeredMatches = [];
-                    const addressMatchMap = new Map(); // Mapa endereço -> matchType individual
                     for (const addrDetails of allAddressesWithDetails) {
                         const match = getCachedClientMatch(addrDetails.address, addrDetails.bairro, addrDetails.zipcode);
                         if (match) {
                             registeredMatches.push(match);
-                            // Armazena o matchType individual deste endereço
-                            addressMatchMap.set(addrDetails.address, match.matchType);
-                        } else {
-                            // Sem match = não cadastrado
-                            addressMatchMap.set(addrDetails.address, null);
                         }
                     }
-
-                    // Agora constrói addressSequencePairs com o matchType individual de cada endereço
-                    const addressSequencePairs = addressSequencePairsTemp.map(pair => ({
-                        address: pair.address,
-                        sequence: pair.sequence,
-                        bairro: pair.bairro,
-                        zipcode: pair.zipcode,
-                        matchType: addressMatchMap.get(pair.address) || null // 'exact', 'similarity', ou null
-                    }))
 
                     // Determine match type: 'exact' if ALL matches are exact, 'similarity' if at least one is similarity
                     let matchType = null;
@@ -13370,7 +13309,7 @@
         let torchSupported = false; // Se o dispositivo suporta lanterna
         let lastBrightnessCheck = 0; // Timestamp da última verificação de luminosidade
         const BRIGHTNESS_CHECK_INTERVAL = 500; // Verificar a cada 500ms
-        const DARK_THRESHOLD = 20; // Limiar de escuridão (0-255, menor = mais escuro)
+        const DARK_THRESHOLD = 50; // Limiar de escuridão (0-255, menor = mais escuro)
 
         // Open QR Scanner
         cadastrarBtn.addEventListener('click', () => {
@@ -13784,85 +13723,47 @@
 
                             return isNotRegistered || isSimilarityMatch;
                         })
-                        .flatMap(f => {
+                        .map(f => {
                             const props = f.properties;
 
-                            // Usa addressSequencePairs que contém matchType individual de cada endereço
-                            let addressPairs = [];
-                            if (props.addressSequencePairs) {
-                                try {
-                                    if (typeof props.addressSequencePairs === 'string') {
-                                        addressPairs = JSON.parse(props.addressSequencePairs);
-                                    } else if (Array.isArray(props.addressSequencePairs)) {
-                                        addressPairs = props.addressSequencePairs;
-                                    }
-                                } catch (e) {
-                                    addressPairs = [];
+                            // allAddresses é armazenado como string 'addr1|||addr2|||addr3'
+                            let addresses = [];
+                            if (props.allAddresses) {
+                                if (typeof props.allAddresses === 'string') {
+                                    addresses = props.allAddresses.split('|||').filter(Boolean);
+                                } else if (Array.isArray(props.allAddresses)) {
+                                    addresses = props.allAddresses;
                                 }
                             }
 
-                            // Se não tiver addressSequencePairs, fallback para método antigo
-                            if (addressPairs.length === 0) {
-                                // Fallback: allAddresses é armazenado como string 'addr1|||addr2|||addr3'
-                                let addresses = [];
-                                if (props.allAddresses) {
-                                    if (typeof props.allAddresses === 'string') {
-                                        addresses = props.allAddresses.split('|||').filter(Boolean);
-                                    } else if (Array.isArray(props.allAddresses)) {
-                                        addresses = props.allAddresses;
-                                    }
-                                }
+                            // Primeiro endereço do grupo (ou address principal)
+                            const firstAddr = addresses[0] || props.address || '';
 
-                                // sequences é armazenado como string '1, 2, 3'
-                                let sequences = [];
-                                if (props.sequences) {
-                                    if (typeof props.sequences === 'string') {
-                                        sequences = props.sequences.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-                                    } else if (Array.isArray(props.sequences)) {
-                                        sequences = props.sequences;
-                                    }
-                                }
-
-                                // Cria pairs para o fallback
-                                addressPairs = addresses.map((addr, idx) => ({
-                                    address: addr,
-                                    sequence: sequences[idx] || 0,
-                                    matchType: props.matchType || null // Usa matchType do marcador
-                                }));
-
-                                // Se ainda vazio, usa endereço principal
-                                if (addressPairs.length === 0 && props.address) {
-                                    addressPairs = [{
-                                        address: props.address,
-                                        sequence: sequences[0] || 0,
-                                        matchType: props.matchType || null
-                                    }];
+                            // sequences é armazenado como string '1, 2, 3'
+                            let sequences = [];
+                            if (props.sequences) {
+                                if (typeof props.sequences === 'string') {
+                                    sequences = props.sequences.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+                                } else if (Array.isArray(props.sequences)) {
+                                    sequences = props.sequences;
                                 }
                             }
+                            const firstSeq = sequences[0] || 0;
 
-                            // IMPORTANTE: Filtra apenas endereços que NÃO têm match exato
-                            // - matchType === 'exact' -> JÁ CADASTRADO, não mostra
-                            // - matchType === 'similarity' -> match por similaridade, MOSTRA
-                            // - matchType === null -> não cadastrado, MOSTRA
-                            const unregisteredPairs = addressPairs.filter(pair =>
-                                pair.matchType !== 'exact'
-                            );
-
-                            // Retorna um item para cada endereço não cadastrado do grupo
-                            return unregisteredPairs.map(pair => ({
+                            return {
                                 id: props.ids ? props.ids.split(',')[0] : props.id,
-                                sequence: pair.sequence || 0,
-                                destination_address: pair.address || '',
-                                bairro: pair.bairro || props.bairro || '',
+                                sequence: firstSeq,
+                                destination_address: firstAddr,
+                                bairro: props.bairro || '',
                                 city: props.city || '',
-                                zipcode: pair.zipcode || props.zipcode || '',
+                                zipcode: props.zipcode || '',
                                 latitude: f.geometry.coordinates[1],
                                 longitude: f.geometry.coordinates[0],
                                 // Dados extras para grupos
-                                allAddresses: [pair.address],
-                                allSequences: [pair.sequence],
+                                allAddresses: addresses,
+                                allSequences: sequences,
                                 allIds: props.ids
-                            }));
+                            };
                         })
                         .filter(addr => addr.destination_address) // Remove entradas sem endereço
                         .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
