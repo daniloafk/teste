@@ -9449,7 +9449,12 @@
                         );
                     }
 
-                    if (isMatch && props.isRegistered) {
+                    // Verifica se o marcador tem status de entrega (entregue ou não entregue)
+                    const hasDeliveryStatus = props.deliveryStatus === 'delivered' || props.deliveryStatus === 'not_delivered';
+
+                    // CORREÇÃO: Também processa marcadores com status de entrega
+                    // Se o cliente foi excluído e o marcador tinha status de entrega, precisa reverter
+                    if (isMatch && (props.isRegistered || hasDeliveryStatus)) {
                         updated = true;
                         const packageCount = props.packageCount || 1;
 
@@ -9495,14 +9500,22 @@
                             const newIconId = `pin-${newColor}-${packageCount}`;
                             iconsToGenerate.add(newIconId);
 
+                            // Se tinha status de entrega, limpa (pois foi aplicado ao endereço excluído)
+                            const updatedProps = {
+                                ...props,
+                                matchType: hasSimilarityAddresses ? 'similarity' : 'exact',
+                                icon: newIconId,
+                                addressSequencePairs: updatedAddressSequencePairs
+                            };
+
+                            // Limpa status de entrega se existia
+                            if (hasDeliveryStatus) {
+                                updatedProps.deliveryStatus = 'pending';
+                            }
+
                             return {
                                 ...feature,
-                                properties: {
-                                    ...props,
-                                    matchType: hasSimilarityAddresses ? 'similarity' : 'exact',
-                                    icon: newIconId,
-                                    addressSequencePairs: updatedAddressSequencePairs
-                                }
+                                properties: updatedProps
                             };
                         }
 
@@ -9530,6 +9543,8 @@
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
                                         addressSequencePairs: updatedAddressSequencePairs,
+                                        // Limpa status de entrega (cadastro foi excluído)
+                                        deliveryStatus: 'pending',
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -9561,6 +9576,8 @@
                                     latitude: planilhaItem.latitude,
                                     longitude: planilhaItem.longitude,
                                     addressSequencePairs: updatedAddressSequencePairs,
+                                    // Limpa status de entrega (cadastro foi excluído)
+                                    deliveryStatus: 'pending',
                                     // Limpa dados salvos
                                     previousMatchType: null,
                                     previousMatchedClientAddress: null,
@@ -9591,6 +9608,8 @@
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
                                         addressSequencePairs: updatedAddressSequencePairs,
+                                        // Limpa status de entrega (cadastro foi excluído)
+                                        deliveryStatus: 'pending',
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -9601,6 +9620,13 @@
                             } catch (parseErr) {
                                 // Falha ao parsear coordenadas
                             }
+                        }
+
+                        // PRIORIDADE 4: Marcador tinha status de entrega mas não tem coordenadas anteriores
+                        // Nesse caso, marca para remoção completa do mapa
+                        if (hasDeliveryStatus) {
+                            console.log('🗑️ Removendo marcador entregue após exclusão do cadastro:', featureAddr);
+                            return null;
                         }
 
                         // Não tinha coordenadas originais - marca para remoção
