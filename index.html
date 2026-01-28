@@ -7299,6 +7299,17 @@
             // Aumentado para 2000ms para evitar piscadas em redes lentas
             if (Date.now() - lastRouteMarkersSave < 2000) return;
 
+            // BLOQUEIO: Verifica se há dados pendentes de similaridade
+            // Se houver, não sobrescreve com dados do servidor até sincronizar
+            try {
+                const pendingSimilarity = await countPendingItems('pendingSimilarityOverrides');
+                if (pendingSimilarity > 0) {
+                    return; // Há alterações pendentes, não sobrescreve
+                }
+            } catch (e) {
+                // Continua mesmo se der erro na verificação
+            }
+
             try {
                 const source = map.getSource('route-stops');
                 if (!source) return; // Marcadores ainda não carregados
@@ -10597,6 +10608,18 @@
             // não sincroniza para evitar race condition com dados antigos do servidor
             // Aumentado para 2000ms para evitar piscadas em redes lentas
             if (Date.now() - lastRouteMarkersSave < 2000) return;
+
+            // BLOQUEIO: Verifica se há dados pendentes de similaridade ou status
+            // Se houver, não sobrescreve com dados do servidor até sincronizar
+            try {
+                const pendingSimilarity = await countPendingItems('pendingSimilarityOverrides');
+                const pendingStatus = await countPendingItems('pendingDeliveryStatus');
+                if (pendingSimilarity > 0 || pendingStatus > 0) {
+                    return; // Há alterações pendentes, não sobrescreve
+                }
+            } catch (e) {
+                // Continua mesmo se der erro na verificação
+            }
 
             try {
                 // Fetch all delivery statuses from Supabase
