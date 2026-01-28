@@ -341,6 +341,59 @@
             color: white;
         }
 
+        /* Center on Route Markers Button */
+        .center-route-btn {
+            position: fixed;
+            top: 50%;
+            left: 16px;
+            transform: translateY(-50%);
+            z-index: 1000;
+            width: 48px;
+            height: 48px;
+            min-width: 48px;
+            min-height: 48px;
+            max-width: 48px;
+            max-height: 48px;
+            border: none;
+            border-radius: 12px;
+            background: var(--surface-light);
+            box-shadow: var(--shadow);
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            padding: 0;
+        }
+
+        .center-route-btn.visible {
+            display: flex;
+        }
+
+        body.dark .center-route-btn {
+            background: var(--surface-dark);
+        }
+
+        .center-route-btn:hover {
+            transform: translateY(-50%) scale(1.05);
+            background: var(--primary);
+        }
+
+        .center-route-btn:hover svg {
+            color: white;
+        }
+
+        .center-route-btn svg {
+            width: 24px;
+            height: 24px;
+            color: var(--text-light);
+            transition: color 0.3s ease;
+        }
+
+        body.dark .center-route-btn svg {
+            color: var(--text-dark);
+        }
+
         .hamburger {
             width: 22px;
             height: 16px;
@@ -4291,6 +4344,13 @@
         </svg>
     </button>
 
+    <!-- Center on Route Markers Button -->
+    <button class="center-route-btn" id="centerRouteBtn" aria-label="Centralizar nos marcadores de rota" title="Centralizar nos marcadores de rota">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+        </svg>
+    </button>
+
     <!-- End Navigation Button -->
     <button class="end-nav-btn" id="endNavBtn">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
@@ -7956,7 +8016,7 @@
                     timeout: 6000              // 6 segundos de timeout
                 },
 
-                // Rastreamento contínuo da posição do usuário
+                // Rastreamento contínuo da posiç��o do usuário
                 trackUserLocation: true,
 
                 // Mostra indicador de direção (heading) no marcador
@@ -8136,6 +8196,7 @@
         const loadingState = document.getElementById('loadingState');
         const clienteCount = document.getElementById('clienteCount');
         const toggleMarkersBtn = document.getElementById('toggleMarkersBtn');
+        const centerRouteBtn = document.getElementById('centerRouteBtn');
         const searchInput = document.getElementById('searchInput');
 
         function toggleSidebar() {
@@ -8171,6 +8232,74 @@
                 removeMarkersFromMap();
             }
         });
+
+        // Center on route markers functionality
+        function centerOnRouteMarkers() {
+            if (!map || !map.getSource || !map.getSource('route-stops')) {
+                ErrorHandler.notify('Nenhum marcador de rota disponível', 'warning');
+                return;
+            }
+
+            const source = map.getSource('route-stops');
+            if (!source || !source._data || !source._data.features || source._data.features.length === 0) {
+                ErrorHandler.notify('Nenhum marcador de rota no mapa', 'warning');
+                return;
+            }
+
+            const features = source._data.features;
+
+            // Calcula os limites (bounding box) de todos os marcadores
+            let minLng = Infinity, maxLng = -Infinity;
+            let minLat = Infinity, maxLat = -Infinity;
+
+            features.forEach(feature => {
+                if (feature.geometry && feature.geometry.coordinates) {
+                    const [lng, lat] = feature.geometry.coordinates;
+                    if (lng && lat && !isNaN(lng) && !isNaN(lat)) {
+                        minLng = Math.min(minLng, lng);
+                        maxLng = Math.max(maxLng, lng);
+                        minLat = Math.min(minLat, lat);
+                        maxLat = Math.max(maxLat, lat);
+                    }
+                }
+            });
+
+            // Verifica se encontrou coordenadas válidas
+            if (minLng === Infinity || maxLng === -Infinity || minLat === Infinity || maxLat === -Infinity) {
+                ErrorHandler.notify('Coordenadas dos marcadores inválidas', 'warning');
+                return;
+            }
+
+            // Ajusta o mapa para mostrar todos os marcadores com padding
+            map.fitBounds(
+                [[minLng, minLat], [maxLng, maxLat]],
+                {
+                    padding: { top: 80, bottom: 120, left: 60, right: 60 },
+                    maxZoom: 16,
+                    duration: 1000
+                }
+            );
+        }
+
+        // Mostrar/ocultar botão de centralizar baseado na existência de marcadores de rota
+        function updateCenterRouteButtonVisibility() {
+            if (!centerRouteBtn) return;
+
+            const hasRouteMarkers = map &&
+                map.getSource &&
+                map.getSource('route-stops') &&
+                map.getSource('route-stops')._data &&
+                map.getSource('route-stops')._data.features &&
+                map.getSource('route-stops')._data.features.length > 0;
+
+            if (hasRouteMarkers) {
+                centerRouteBtn.classList.add('visible');
+            } else {
+                centerRouteBtn.classList.remove('visible');
+            }
+        }
+
+        centerRouteBtn.addEventListener('click', centerOnRouteMarkers);
 
         // Load clientes from Supabase with persistent caching
         async function loadClientes() {
@@ -10807,6 +10936,11 @@
             updateStat('fixedStatUnregistered', stats.unregistered);
             updateStat('fixedStatPending', stats.pending);
             updateStat('fixedStatDelivered', stats.delivered);
+
+            // Atualiza visibilidade do botão de centralizar
+            if (typeof updateCenterRouteButtonVisibility === 'function') {
+                updateCenterRouteButtonVisibility();
+            }
         }
 
         // Hide fixed stats panel
@@ -10814,6 +10948,11 @@
             const panel = document.getElementById('fixedStatsPanel');
             if (panel) {
                 panel.classList.remove('visible');
+            }
+
+            // Também esconde o botão de centralizar
+            if (typeof updateCenterRouteButtonVisibility === 'function') {
+                updateCenterRouteButtonVisibility();
             }
         }
 
