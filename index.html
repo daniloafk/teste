@@ -9521,6 +9521,43 @@
 
                         // Nenhum endereço cadastrado restante - volta ao estado original
 
+                        // PRIORIDADE 0: Usar originalCoordinates se disponível (coordenadas originais antes do cadastro)
+                        if (props.originalCoordinates) {
+                            try {
+                                const originalCoords = JSON.parse(props.originalCoordinates);
+                                const newIconId = `pin-red-${packageCount}`;
+                                iconsToGenerate.add(newIconId);
+
+                                return {
+                                    ...feature,
+                                    geometry: {
+                                        type: 'Point',
+                                        coordinates: originalCoords
+                                    },
+                                    properties: {
+                                        ...props,
+                                        isRegistered: false,
+                                        matchType: null,
+                                        matchedClientAddress: null,
+                                        icon: newIconId,
+                                        latitude: originalCoords[1],
+                                        longitude: originalCoords[0],
+                                        addressSequencePairs: updatedAddressSequencePairs,
+                                        // Limpa status de entrega (cadastro foi excluído)
+                                        deliveryStatus: 'pending',
+                                        // Limpa dados salvos
+                                        originalCoordinates: null,
+                                        previousMatchType: null,
+                                        previousMatchedClientAddress: null,
+                                        previousCoordinates: null,
+                                        previousIsRegistered: null
+                                    }
+                                };
+                            } catch (parseErr) {
+                                console.error('Erro ao parsear originalCoordinates:', parseErr);
+                            }
+                        }
+
                         // PRIORIDADE 1: Verificar se tinha estado anterior salvo (similaridade/roxo)
                         if (props.previousMatchType === 'similarity' && props.previousCoordinates) {
                             try {
