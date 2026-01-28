@@ -6008,6 +6008,17 @@
                                 });
                             }
 
+                            // Obtém IDs de pendingSimilarityOverrides para saber quais marcadores tiveram alteração de similaridade
+                            const pendingSimilarityOverrides = await getAllFromOfflineDB('pendingSimilarityOverrides');
+                            const pendingSimilarityIdsSet = new Set();
+                            if (pendingSimilarityOverrides && pendingSimilarityOverrides.length > 0) {
+                                pendingSimilarityOverrides.forEach(item => {
+                                    if (item.ids && Array.isArray(item.ids)) {
+                                        item.ids.forEach(id => pendingSimilarityIdsSet.add(id));
+                                    }
+                                });
+                            }
+
                             // Merge: para cada feature do Supabase, verifica se temos alteração local pendente
                             const mergedFeatures = supabaseMarkers.geojson.features.map(remoteFeature => {
                                 const localFeature = localFeaturesMap.get(remoteFeature.properties.ids);
@@ -6029,9 +6040,17 @@
                                     );
                                 }
 
-                                if (hasLocalPendingChange) {
-                                    // Temos alteração local pendente - MANTÉM o feature LOCAL
-                                    // As coordenadas serão atualizadas quando syncPendingClients rodar
+                                // Verifica se este marcador tem alteração de similaridade pendente
+                                let hasSimilarityPendingChange = false;
+                                const featureIds = remoteFeature.properties.ids;
+                                if (featureIds) {
+                                    const idsArray = featureIds.split(',').map(id => parseInt(id.trim()));
+                                    hasSimilarityPendingChange = idsArray.some(id => pendingSimilarityIdsSet.has(id));
+                                }
+
+                                if (hasLocalPendingChange || hasSimilarityPendingChange) {
+                                    // Temos alteração local pendente (cliente ou similaridade) - MANTÉM o feature LOCAL
+                                    // As coordenadas e propriedades serão mantidas do estado local
                                     return localFeature;
                                 } else {
                                     // Sem alteração local pendente - USA o feature do SUPABASE
@@ -6475,7 +6494,8 @@
                 const pendingPlanilha = await countPendingItems('pendingPlanilha');
                 const pendingStatus = await countPendingItems('pendingDeliveryStatus');
                 const pendingDeletes = await countPendingItems('pendingDeletes');
-                const totalPending = pendingClients + pendingPlanilha + pendingStatus + pendingDeletes;
+                const pendingSimilarity = await countPendingItems('pendingSimilarityOverrides');
+                const totalPending = pendingClients + pendingPlanilha + pendingStatus + pendingDeletes + pendingSimilarity;
 
                 if (!isOnline) {
                     indicator.classList.add('offline');
@@ -6519,7 +6539,8 @@
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
                     const pendingDeletes = await countPendingItems('pendingDeletes');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0;
+                    const pendingSimilarity = await countPendingItems('pendingSimilarityOverrides');
+                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0 || pendingSimilarity > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
@@ -7330,6 +7351,10 @@
                             if (!feature.properties.previousCoordinates && localProps.previousCoordinates) {
                                 feature.properties.previousCoordinates = localProps.previousCoordinates;
                             }
+                            // Preserva wasDeactivated para marcadores que tiveram similaridade desativada
+                            if (localProps.wasDeactivated && !feature.properties.wasDeactivated) {
+                                feature.properties.wasDeactivated = localProps.wasDeactivated;
+                            }
                         }
                     });
                 }
@@ -7479,9 +7504,10 @@
                         const pendingPlanilha = await countPendingItems('pendingPlanilha');
                         const pendingStatus = await countPendingItems('pendingDeliveryStatus');
                         const pendingDeletes = await countPendingItems('pendingDeletes');
+                        const pendingSimilarity = await countPendingItems('pendingSimilarityOverrides');
 
-                        // Só sincroniza se houver dados pendentes (incluindo exclusões)
-                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0) {
+                        // Só sincroniza se houver dados pendentes (incluindo exclusões e similaridade)
+                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0 || pendingSimilarity > 0) {
                             syncAllPendingData();
                         }
                     } catch (e) {
@@ -8016,7 +8042,7 @@
                     timeout: 6000              // 6 segundos de timeout
                 },
 
-                // Rastreamento contínuo da posiç��o do usuário
+                // Rastreamento contínuo da posição do usuário
                 trackUserLocation: true,
 
                 // Mostra indicador de direção (heading) no marcador
