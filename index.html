@@ -4869,41 +4869,19 @@
         }
 
         // Delete synced data from IndexedDB
-        // CORREÇÃO: Retorna resolve em vez de reject para não interromper loops de sync
         function deleteSyncedFromOfflineDB(storeName, localId) {
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
                 if (!offlineDB) {
-                    // Não rejeita - apenas loga e continua
-                    console.warn('[IndexedDB] DB não inicializado ao tentar deletar de:', storeName);
-                    resolve(false);
+                    reject(new Error('IndexedDB não inicializado'));
                     return;
                 }
 
-                if (localId === undefined || localId === null) {
-                    console.warn('[IndexedDB] localId inválido para deletar de:', storeName);
-                    resolve(false);
-                    return;
-                }
+                const transaction = offlineDB.transaction([storeName], 'readwrite');
+                const store = transaction.objectStore(storeName);
+                const request = store.delete(localId);
 
-                try {
-                    const transaction = offlineDB.transaction([storeName], 'readwrite');
-                    const store = transaction.objectStore(storeName);
-                    const request = store.delete(localId);
-
-                    request.onsuccess = () => resolve(true);
-                    request.onerror = () => {
-                        console.warn('[IndexedDB] Erro ao deletar de', storeName, ':', request.error);
-                        resolve(false); // Não rejeita - permite que o loop continue
-                    };
-
-                    transaction.onerror = () => {
-                        console.warn('[IndexedDB] Erro na transação de delete:', transaction.error);
-                        resolve(false);
-                    };
-                } catch (err) {
-                    console.warn('[IndexedDB] Exceção ao deletar de', storeName, ':', err);
-                    resolve(false);
-                }
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject(request.error);
             });
         }
 
@@ -5599,7 +5577,7 @@
         };
 
         // Sync pending clients to Supabase
-        // CORREÇÃO: Usa estratégia de upsert mais segura para evitar race conditions
+        // Usa INSERT/UPDATE manual pois a tabela não tem UNIQUE constraint em address
         // Retorna array de endereços que foram sincronizados com sucesso
         async function syncPendingClients() {
             const syncedAddresses = [];
@@ -5610,16 +5588,6 @@
                 // Processa cada cliente individualmente (INSERT ou UPDATE)
                 for (const pendingClient of pendingClients) {
                     try {
-                        // Validação básica
-                        if (!pendingClient.address || pendingClient.latitude === undefined || pendingClient.longitude === undefined) {
-                            console.warn('[SYNC] Cliente inválido, pulando:', pendingClient);
-                            // Remove item inválido da fila
-                            if (pendingClient.localId) {
-                                await deleteSyncedFromOfflineDB('pendingClients', pendingClient.localId);
-                            }
-                            continue;
-                        }
-
                         const clientData = {
                             address: pendingClient.address,
                             bairro: pendingClient.bairro || null,
@@ -5629,47 +5597,47 @@
                             longitude: pendingClient.longitude
                         };
 
+                        // Verifica se o endereço já existe no Supabase
+                        const { data: existing, error: selectError } = await db
+                            .from('clients')
+                            .select('id')
+                            .eq('address', pendingClient.address)
+                            .limit(1);
+
                         let syncSuccess = false;
 
-                        // CORREÇÃO: Estratégia INSERT-first com fallback para UPDATE
-                        // Isso é mais seguro contra race conditions do que SELECT + INSERT/UPDATE
-                        // 1. Tenta INSERT primeiro
-                        const { error: insertError } = await db
-                            .from('clients')
-                            .insert(clientData);
+                        if (selectError) {
+                            console.error('[SYNC] Erro ao verificar existência:', selectError);
+                            continue;
+                        }
 
-                        if (!insertError) {
-                            // INSERT bem-sucedido
-                            syncSuccess = true;
-                        } else {
-                            // Se INSERT falhou, pode ser duplicata ou outro erro
-                            // Verifica se é erro de duplicata (constraint violation ou registro já existe)
-                            const errorMsg = (insertError.message || insertError.code || '').toLowerCase();
-                            const isDuplicateError = errorMsg.includes('duplicate') ||
-                                                     errorMsg.includes('unique') ||
-                                                     errorMsg.includes('already exists') ||
-                                                     errorMsg.includes('23505'); // PostgreSQL unique_violation code
+                        if (existing && existing.length > 0) {
+                            // UPDATE: Endereço já existe, atualiza coordenadas
+                            const { error: updateError } = await db
+                                .from('clients')
+                                .update({
+                                    bairro: clientData.bairro,
+                                    city: clientData.city,
+                                    zipcode: clientData.zipcode,
+                                    latitude: clientData.latitude,
+                                    longitude: clientData.longitude
+                                })
+                                .eq('address', pendingClient.address);
 
-                            if (isDuplicateError) {
-                                // 2. Fallback: Tenta UPDATE se INSERT falhou por duplicata
-                                const { error: updateError } = await db
-                                    .from('clients')
-                                    .update({
-                                        bairro: clientData.bairro,
-                                        city: clientData.city,
-                                        zipcode: clientData.zipcode,
-                                        latitude: clientData.latitude,
-                                        longitude: clientData.longitude
-                                    })
-                                    .eq('address', pendingClient.address);
-
-                                if (!updateError) {
-                                    syncSuccess = true;
-                                } else {
-                                    console.error('[SYNC] Erro no UPDATE após INSERT falhar:', updateError);
-                                }
+                            if (!updateError) {
+                                syncSuccess = true;
                             } else {
-                                // Outro tipo de erro no INSERT
+                                console.error('[SYNC] Erro no UPDATE:', updateError);
+                            }
+                        } else {
+                            // INSERT: Novo endereço
+                            const { error: insertError } = await db
+                                .from('clients')
+                                .insert(clientData);
+
+                            if (!insertError) {
+                                syncSuccess = true;
+                            } else {
                                 console.error('[SYNC] Erro no INSERT:', insertError);
                             }
                         }
@@ -5697,7 +5665,6 @@
         }
 
         // Sync pending planilha data to Supabase
-        // CORREÇÃO: Processa individualmente para tratar duplicatas e erros parciais
         // Retorna array de endereços que foram sincronizados com sucesso
         async function syncPendingPlanilha() {
             const syncedAddresses = [];
@@ -5705,97 +5672,43 @@
                 const pendingPlanilha = await getPendingFromOfflineDB('pendingPlanilha');
                 if (pendingPlanilha.length === 0) return syncedAddresses;
 
-                // CORREÇÃO: Processa cada item individualmente para melhor tratamento de erros
-                for (let i = 0; i < pendingPlanilha.length; i++) {
-                    const item = pendingPlanilha[i];
+                const batchData = pendingPlanilha.map(item => ({
+                    destination_address: item.destination_address,
+                    latitude: item.latitude,
+                    longitude: item.longitude,
+                    sequence: item.sequence,
+                    stop: item.stop,
+                    delivery_status: item.delivery_status || 'pending',
+                    spx_tn: item.spx_tn,
+                    bairro: item.bairro,
+                    city: item.city
+                }));
 
-                    // Validação básica
-                    if (!item.destination_address) {
-                        console.warn('[SYNC] Item de planilha sem destination_address, removendo:', item);
-                        if (item.localId) {
-                            await deleteSyncedFromOfflineDB('pendingPlanilha', item.localId);
+                const { error } = await db
+                    .from('planilha')
+                    .insert(batchData);
+
+                if (!error) {
+                    // PERFORMANCE: Deleta itens com yield para não travar
+                    for (let i = 0; i < pendingPlanilha.length; i++) {
+                        if (i > 0 && i % 5 === 0) {
+                            await yieldToMain();
                         }
-                        continue;
-                    }
-
-                    try {
-                        const planilhaData = {
-                            destination_address: item.destination_address,
-                            latitude: item.latitude,
-                            longitude: item.longitude,
-                            sequence: item.sequence,
-                            stop: item.stop,
-                            delivery_status: item.delivery_status || 'pending',
-                            spx_tn: item.spx_tn,
-                            bairro: item.bairro,
-                            city: item.city
-                        };
-
-                        // CORREÇÃO: Estratégia INSERT-first com fallback para UPDATE
-                        const { error: insertError } = await db
-                            .from('planilha')
-                            .insert(planilhaData);
-
-                        let syncSuccess = false;
-
-                        if (!insertError) {
-                            syncSuccess = true;
-                        } else {
-                            // Verifica se é erro de duplicata
-                            const errorMsg = (insertError.message || insertError.code || '').toLowerCase();
-                            const isDuplicateError = errorMsg.includes('duplicate') ||
-                                                     errorMsg.includes('unique') ||
-                                                     errorMsg.includes('already exists') ||
-                                                     errorMsg.includes('23505');
-
-                            if (isDuplicateError) {
-                                // Fallback: UPDATE se já existe
-                                const { error: updateError } = await db
-                                    .from('planilha')
-                                    .update({
-                                        latitude: planilhaData.latitude,
-                                        longitude: planilhaData.longitude,
-                                        sequence: planilhaData.sequence,
-                                        stop: planilhaData.stop,
-                                        delivery_status: planilhaData.delivery_status,
-                                        spx_tn: planilhaData.spx_tn,
-                                        bairro: planilhaData.bairro,
-                                        city: planilhaData.city
-                                    })
-                                    .eq('destination_address', item.destination_address);
-
-                                if (!updateError) {
-                                    syncSuccess = true;
-                                } else {
-                                    console.error('[SYNC] Erro no UPDATE de planilha:', updateError);
-                                }
-                            } else {
-                                console.error('[SYNC] Erro no INSERT de planilha:', insertError);
-                            }
+                        await deleteSyncedFromOfflineDB('pendingPlanilha', pendingPlanilha[i].localId);
+                        // Coleta os endereços sincronizados
+                        if (pendingPlanilha[i].destination_address) {
+                            syncedAddresses.push(pendingPlanilha[i].destination_address);
                         }
-
-                        if (syncSuccess) {
-                            await deleteSyncedFromOfflineDB('pendingPlanilha', item.localId);
-                            syncedAddresses.push(item.destination_address);
-                        }
-
-                    } catch (itemErr) {
-                        console.error('[SYNC] Erro ao sincronizar item de planilha:', item.destination_address, itemErr);
                     }
-
-                    // Cede controle a cada 5 itens
-                    if (i > 0 && i % 5 === 0) {
-                        await yieldToMain();
-                    }
+                    // NÃO faz refresh do cache completo - quem chamou decide se precisa
                 }
             } catch (err) {
-                console.error('[SYNC] Erro ao obter planilha pendente:', err);
+                // Erro na sincronização de planilha
             }
             return syncedAddresses;
         }
 
         // Sync pending delivery status updates to Supabase - BATCH OPTIMIZED
-        // CORREÇÃO: Trata sincronização parcial corretamente e valida item.ids
         // Agrupa por status para fazer menos chamadas ao banco
         // Retorna objeto com IDs sincronizados por status: { delivered: [ids], pending: [ids], ... }
         async function syncPendingDeliveryStatus() {
@@ -5805,47 +5718,14 @@
                 if (pendingStatus.length === 0) return syncedStatusChanges;
 
                 // BATCH: Agrupa todos os IDs por status
-                // CORREÇÃO: Também rastreia quais localIds correspondem a quais IDs
-                const statusGroups = new Map(); // status -> { idToLocalId: Map, allLocalIds: [] }
+                const statusGroups = new Map(); // status -> { ids: [], localIds: [] }
 
                 for (const item of pendingStatus) {
-                    // CORREÇÃO: Valida item.ids antes de usar spread
-                    if (!item.ids || !Array.isArray(item.ids) || item.ids.length === 0) {
-                        console.warn('[SYNC] Item de status inválido (sem ids), removendo:', item);
-                        // Remove item inválido da fila
-                        if (item.localId) {
-                            await deleteSyncedFromOfflineDB('pendingDeliveryStatus', item.localId);
-                        }
-                        continue;
-                    }
-
-                    if (!item.status) {
-                        console.warn('[SYNC] Item de status sem status definido, removendo:', item);
-                        if (item.localId) {
-                            await deleteSyncedFromOfflineDB('pendingDeliveryStatus', item.localId);
-                        }
-                        continue;
-                    }
-
                     if (!statusGroups.has(item.status)) {
-                        statusGroups.set(item.status, {
-                            ids: [],
-                            localIds: [],
-                            // CORREÇÃO: Mapeia cada ID para seu localId de origem
-                            idToLocalIdMap: new Map()
-                        });
+                        statusGroups.set(item.status, { ids: [], localIds: [] });
                     }
                     const group = statusGroups.get(item.status);
-
-                    // Adiciona IDs e mapeia para o localId de origem
-                    for (const id of item.ids) {
-                        group.ids.push(id);
-                        // Guarda referência de qual localId este ID veio
-                        if (!group.idToLocalIdMap.has(item.localId)) {
-                            group.idToLocalIdMap.set(item.localId, []);
-                        }
-                        group.idToLocalIdMap.get(item.localId).push(id);
-                    }
+                    group.ids.push(...item.ids);
                     group.localIds.push(item.localId);
                 }
 
@@ -5861,68 +5741,38 @@
                     try {
                         // Divide IDs em chunks para evitar cláusula IN muito grande
                         const idChunks = chunkArray(group.ids, BATCH_IDS_SIZE);
-                        const successfulIds = []; // CORREÇÃO: Rastreia quais IDs foram sincronizados
-                        const failedChunks = [];
+                        let allSuccess = true;
 
-                        for (let i = 0; i < idChunks.length; i++) {
-                            const idChunk = idChunks[i];
-                            try {
-                                const { error } = await db
-                                    .from('planilha')
-                                    .update({ delivery_status: status })
-                                    .in('id', idChunk);
+                        for (const idChunk of idChunks) {
+                            const { error } = await db
+                                .from('planilha')
+                                .update({ delivery_status: status })
+                                .in('id', idChunk);
 
-                                if (error) {
-                                    console.error('[SYNC] Erro ao atualizar status chunk', i, ':', error);
-                                    failedChunks.push(i);
-                                } else {
-                                    // CORREÇÃO: Marca estes IDs como sincronizados
-                                    successfulIds.push(...idChunk);
-                                }
-                            } catch (chunkErr) {
-                                console.error('[SYNC] Exceção no chunk', i, ':', chunkErr);
-                                failedChunks.push(i);
+                            if (error) {
+                                allSuccess = false;
+                                break;
                             }
                         }
 
-                        // CORREÇÃO: Processa resultado parcial
-                        if (successfulIds.length > 0) {
-                            // Adiciona IDs sincronizados ao resultado
-                            if (!syncedStatusChanges[status]) {
-                                syncedStatusChanges[status] = [];
-                            }
-                            syncedStatusChanges[status].push(...successfulIds);
-
-                            // CORREÇÃO: Só deleta localIds cujos TODOS os IDs foram sincronizados
-                            const successfulIdSet = new Set(successfulIds);
+                        if (allSuccess) {
+                            // Deleta todos os localIds deste status
                             for (const localId of group.localIds) {
-                                const idsFromThisLocal = group.idToLocalIdMap.get(localId) || [];
-                                const allIdsSynced = idsFromThisLocal.every(id => successfulIdSet.has(id));
-
-                                if (allIdsSynced && idsFromThisLocal.length > 0) {
-                                    await deleteSyncedFromOfflineDB('pendingDeliveryStatus', localId);
-                                }
+                                await deleteSyncedFromOfflineDB('pendingDeliveryStatus', localId);
                             }
-                        }
-
-                        // Log de resultado
-                        if (failedChunks.length > 0) {
-                            console.warn('[SYNC] Sincronização parcial de status', status,
-                                         '- Sucesso:', successfulIds.length,
-                                         '- Falhas em chunks:', failedChunks.length);
+                            syncedStatusChanges[status] = group.ids;
                         }
                     } catch (err) {
-                        console.error('[SYNC] Erro na sincronização do status', status, ':', err);
+                        // Erro na sincronização deste status
                     }
                 }
             } catch (err) {
-                console.error('[SYNC] Erro ao obter status pendentes:', err);
+                // Erro ao obter status pendentes
             }
             return syncedStatusChanges;
         }
 
         // Sync pending similarity overrides to Supabase - BATCH OPTIMIZED
-        // CORREÇÃO: Adiciona validação de item.ids e logs de erro
         // Agrupa overrides com mesmos parâmetros para fazer menos chamadas
         // Retorna true se houve alterações sincronizadas
         async function syncPendingSimilarityOverrides() {
@@ -5935,15 +5785,6 @@
                 const overrideGroups = new Map(); // key -> { ids: [], localIds: [], params: {} }
 
                 for (const item of pendingOverrides) {
-                    // CORREÇÃO: Valida item.ids antes de usar spread
-                    if (!item.ids || !Array.isArray(item.ids) || item.ids.length === 0) {
-                        console.warn('[SYNC] Override inválido (sem ids), removendo:', item);
-                        if (item.localId) {
-                            await deleteSyncedFromOfflineDB('pendingSimilarityOverrides', item.localId);
-                        }
-                        continue;
-                    }
-
                     // Cria chave única para agrupamento baseada nos parâmetros
                     const key = `${item.similarity_disabled}_${item.similarity_original_lat}_${item.similarity_original_lng}`;
 
@@ -5965,7 +5806,7 @@
 
                 // BATCH: Uma chamada por grupo de parâmetros
                 let groupIndex = 0;
-                for (const [key, group] of overrideGroups) {
+                for (const [, group] of overrideGroups) {
                     // Cede controle entre grupos
                     if (groupIndex > 0) {
                         await yieldToMain();
@@ -5984,7 +5825,6 @@
                                 .in('id', idChunk);
 
                             if (error) {
-                                console.error('[SYNC] Erro ao sincronizar similarity override:', error);
                                 allSuccess = false;
                                 break;
                             }
@@ -5994,96 +5834,52 @@
                             for (const localId of group.localIds) {
                                 await deleteSyncedFromOfflineDB('pendingSimilarityOverrides', localId);
                             }
-                            hadChanges = true;
+                            hadChanges = true; // Marcou que houve alteração
                         }
                     } catch (err) {
-                        console.error('[SYNC] Erro na sincronização do grupo de similarity:', key, err);
+                        // Erro na sincronização deste grupo
                     }
                 }
             } catch (err) {
-                console.error('[SYNC] Erro ao obter overrides pendentes:', err);
+                // Erro ao obter overrides pendentes
             }
             return hadChanges;
         }
 
         // Sync pending deletes to Supabase
-        // CORREÇÃO: Filtra IDs temporários e retorna também endereços para atualizar marcadores
         async function syncPendingDeletes() {
-            // CORREÇÃO: Retorna array de objetos {id, address} para atualizar marcadores de rota
-            const deletedClients = [];
+            const deletedIds = [];
             try {
                 const pendingDeletes = await getPendingFromOfflineDB('pendingDeletes');
-                if (pendingDeletes.length === 0) return deletedClients;
+                if (pendingDeletes.length === 0) return deletedIds;
 
                 for (const item of pendingDeletes) {
                     try {
-                        // CORREÇÃO: Valida clientId
-                        if (!item.clientId) {
-                            console.warn('[SYNC] Item de delete sem clientId, removendo:', item);
-                            if (item.localId) {
-                                await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
-                            }
-                            continue;
-                        }
-
-                        // CORREÇÃO: Verifica se é um ID temporário (criado offline, nunca sincronizado)
-                        // IDs temporários começam com 'new_', 'pending_', 'temp_' ou são strings não-numéricas
-                        const clientIdStr = String(item.clientId);
-                        const isTemporaryId = clientIdStr.startsWith('new_') ||
-                                              clientIdStr.startsWith('pending_') ||
-                                              clientIdStr.startsWith('temp_') ||
-                                              (isNaN(Number(item.clientId)) && !clientIdStr.includes('-')); // UUID tem hífens
-
-                        if (isTemporaryId) {
-                            // ID temporário - nunca existiu no Supabase, apenas remove da fila
-                            console.log('[SYNC] ID temporário detectado, removendo da fila sem chamar Supabase:', item.clientId);
-                            await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
-                            // Ainda adiciona o endereço para atualizar marcadores
-                            deletedClients.push({
-                                id: item.clientId,
-                                address: item.clientAddress || null
-                            });
-                            continue;
-                        }
-
                         const { error } = await db
                             .from('clients')
                             .delete()
                             .eq('id', item.clientId);
 
                         if (error) {
-                            // Verifica se é erro de "não encontrado" ou similar
-                            const errorMsg = (error.message || error.code || '').toLowerCase();
-                            const isNotFoundError = errorMsg.includes('not found') ||
-                                                    errorMsg.includes('no rows') ||
-                                                    errorMsg.includes('does not exist');
-
-                            if (isNotFoundError) {
-                                // Registro já não existe - considera como sucesso
-                                console.log('[SYNC] Cliente já deletado ou não existe:', item.clientId);
-                            } else {
-                                // Outro erro - mantém na fila para retry
-                                console.error('[SYNC] Erro ao deletar cliente:', item.clientId, error);
+                            // Se o erro for "não encontrado", considera como sucesso (já foi deletado)
+                            if (!error.message?.includes('not found')) {
                                 continue;
                             }
                         }
 
                         // Remove da fila de pendentes
                         await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
-                        // CORREÇÃO: Retorna objeto com ID e endereço
-                        deletedClients.push({
-                            id: item.clientId,
-                            address: item.clientAddress || null
-                        });
-
+                        deletedIds.push(item.clientId);
                     } catch (err) {
-                        console.error('[SYNC] Erro ao sincronizar exclusão:', item.clientId, err);
+                        // Erro na sincronização desta exclusão
+                        console.error('Erro ao sincronizar exclusão:', err);
                     }
                 }
             } catch (err) {
-                console.error('[SYNC] Erro ao obter exclusões pendentes:', err);
+                // Erro ao obter exclusões pendentes
+                console.error('Erro ao obter exclusões pendentes:', err);
             }
-            return deletedClients;
+            return deletedIds;
         }
 
         // Main sync function - syncs all pending data
@@ -6094,8 +5890,7 @@
                 syncedPlanilhaAddresses: [],
                 syncedStatusChanges: {},
                 syncedSimilarityChanges: false,
-                // CORREÇÃO: Agora é array de {id, address} para atualizar marcadores
-                syncedDeletedClients: [],
+                syncedDeletedIds: [],
                 hadChanges: false
             };
 
@@ -6112,6 +5907,113 @@
             updateOfflineIndicator();
 
             try {
+                // =====================================================
+                // PASSO 0: BAIXAR route_markers_cache DO SUPABASE PRIMEIRO
+                // Isso garante que temos os dados mais recentes de outros dispositivos
+                // ANTES de aplicar nossas alterações locais
+                // =====================================================
+                try {
+                    const supabaseMarkers = await loadRouteMarkersFromSupabase();
+                    if (supabaseMarkers && supabaseMarkers.geojson && map && map.getSource('route-stops')) {
+                        const source = map.getSource('route-stops');
+                        const localData = source._data;
+
+                        if (localData && localData.features) {
+                            // Cria mapa de features locais por ID
+                            const localFeaturesMap = new Map();
+                            localData.features.forEach(f => {
+                                if (f.properties && f.properties.ids) {
+                                    localFeaturesMap.set(f.properties.ids, f);
+                                }
+                            });
+
+                            // Obtém endereços de pendingClients para saber quais foram alterados localmente
+                            const pendingClients = await getAllFromOfflineDB('pendingClients');
+                            const pendingAddressesSet = new Set();
+                            if (pendingClients && pendingClients.length > 0) {
+                                pendingClients.forEach(c => {
+                                    if (c.address) {
+                                        pendingAddressesSet.add(normalizeAddressForComparison(c.address));
+                                    }
+                                });
+                            }
+
+                            // Merge: para cada feature do Supabase, verifica se temos alteração local pendente
+                            const mergedFeatures = supabaseMarkers.geojson.features.map(remoteFeature => {
+                                const localFeature = localFeaturesMap.get(remoteFeature.properties.ids);
+
+                                if (!localFeature) {
+                                    // Não temos local, usa remoto
+                                    return remoteFeature;
+                                }
+
+                                // Verifica se algum endereço deste marcador tem alteração pendente
+                                let hasLocalPendingChange = false;
+                                const allAddresses = remoteFeature.properties.allAddresses;
+                                if (allAddresses) {
+                                    const addrList = typeof allAddresses === 'string'
+                                        ? allAddresses.split('|||')
+                                        : allAddresses;
+                                    hasLocalPendingChange = addrList.some(addr =>
+                                        pendingAddressesSet.has(normalizeAddressForComparison(addr))
+                                    );
+                                }
+
+                                if (hasLocalPendingChange) {
+                                    // Temos alteração local pendente - MANTÉM o feature LOCAL
+                                    // As coordenadas serão atualizadas quando syncPendingClients rodar
+                                    return localFeature;
+                                } else {
+                                    // Sem alteração local pendente - USA o feature do SUPABASE
+                                    // Mas preserva algumas propriedades locais importantes
+                                    return {
+                                        ...remoteFeature,
+                                        properties: {
+                                            ...remoteFeature.properties,
+                                            // Preserva dados de reversão se existirem localmente
+                                            previousCoordinates: localFeature.properties.previousCoordinates || remoteFeature.properties.previousCoordinates,
+                                            previousMatchType: localFeature.properties.previousMatchType || remoteFeature.properties.previousMatchType,
+                                            previousIsRegistered: localFeature.properties.previousIsRegistered !== undefined
+                                                ? localFeature.properties.previousIsRegistered
+                                                : remoteFeature.properties.previousIsRegistered
+                                        }
+                                    };
+                                }
+                            });
+
+                            // Adiciona features locais que não existem no remoto
+                            localData.features.forEach(localFeature => {
+                                const existsInRemote = supabaseMarkers.geojson.features.some(
+                                    rf => rf.properties.ids === localFeature.properties.ids
+                                );
+                                if (!existsInRemote) {
+                                    mergedFeatures.push(localFeature);
+                                }
+                            });
+
+                            // Atualiza o mapa com os dados mesclados
+                            const mergedGeojson = {
+                                type: 'FeatureCollection',
+                                features: mergedFeatures
+                            };
+
+                            source.setData(mergedGeojson);
+
+                            // Salva no cache local (sem enviar para Supabase ainda)
+                            await saveRouteMarkersToCache(mergedGeojson, supabaseMarkers.stats, true);
+
+                            // Atualiza versão local
+                            if (supabaseMarkers.version) {
+                                currentMarkersVersion = supabaseMarkers.version;
+                            }
+
+                            console.log('🔄 Marcadores mesclados com Supabase antes de sincronizar pendentes');
+                        }
+                    }
+                } catch (mergeErr) {
+                    console.log('⚠️ Erro ao mesclar marcadores do Supabase:', mergeErr);
+                }
+                // =====================================================
                 // PERFORMANCE: Usa longYield entre syncs para não travar o mapa durante interação
                 const clientAddresses = await syncPendingClients();
                 syncResult.syncedClientAddresses = clientAddresses || [];
@@ -6131,9 +6033,8 @@
                 await longYield();
 
                 // Sync pending deletes
-                // CORREÇÃO: Agora retorna array de {id, address}
-                const deletedClients = await syncPendingDeletes();
-                syncResult.syncedDeletedClients = deletedClients || [];
+                const deletedIds = await syncPendingDeletes();
+                syncResult.syncedDeletedIds = deletedIds || [];
                 await longYield();
 
                 // Verifica se houve alguma mudança
@@ -6142,12 +6043,15 @@
                     syncResult.syncedPlanilhaAddresses.length > 0 ||
                     Object.keys(syncResult.syncedStatusChanges).length > 0 ||
                     syncResult.syncedSimilarityChanges ||
-                    syncResult.syncedDeletedClients.length > 0;
+                    syncResult.syncedDeletedIds.length > 0;
 
-                // IMPORTANTE: Se houve mudanças de status OU similarity, atualiza o route_markers_cache no Supabase
+                // IMPORTANTE: Se houve mudanças de status, similarity OU clientes, atualiza o route_markers_cache no Supabase
                 // Isso garante que outros dispositivos recebam as alterações via polling de versão
-                const hasStatusOrSimilarityChanges = Object.keys(syncResult.syncedStatusChanges).length > 0 || syncResult.syncedSimilarityChanges;
-                if (hasStatusOrSimilarityChanges && map && map.getSource('route-stops')) {
+                // INCLUI syncedClientAddresses para sincronizar posições de marcadores após cadastro offline
+                const hasAnyMarkerChanges = Object.keys(syncResult.syncedStatusChanges).length > 0 ||
+                                            syncResult.syncedSimilarityChanges ||
+                                            syncResult.syncedClientAddresses.length > 0;
+                if (hasAnyMarkerChanges && map && map.getSource('route-stops')) {
                     try {
                         const source = map.getSource('route-stops');
                         if (source && source._data) {
@@ -6172,19 +6076,8 @@
                 // Update pending count
                 updateOfflineIndicator();
 
-                // Log de sucesso
-                if (syncResult.hadChanges) {
-                    console.log('[SYNC] Sincronização concluída com sucesso:',
-                        'Clientes:', syncResult.syncedClientAddresses.length,
-                        'Planilha:', syncResult.syncedPlanilhaAddresses.length,
-                        'Status:', Object.keys(syncResult.syncedStatusChanges).length,
-                        'Deletes:', syncResult.syncedDeletedClients.length
-                    );
-                }
-
             } catch (error) {
-                // CORREÇÃO: Log de erro para debug
-                console.error('[SYNC] Erro durante sincronização geral:', error);
+                // Erro durante sincronização
             } finally {
                 isSyncing = false;
                 // DESBLOQUEIO: Libera syncs do servidor após terminar de enviar dados offline
@@ -6272,120 +6165,6 @@
                 }
             } catch (err) {
                 // Erro ao atualizar marcadores - falha silenciosa
-            }
-        }
-
-        // CORREÇÃO: Atualiza marcadores de rota após exclusões de clientes sincronizadas
-        // Reverte marcadores para estado "não cadastrado" (amarelo/laranja) quando cliente é deletado
-        // Recebe array de {id, address} para encontrar marcadores pelo endereço
-        async function updateRouteMarkersAfterDeleteSync(deletedClients) {
-            if (!deletedClients || deletedClients.length === 0) return;
-            if (!map || !map.getSource || !map.getSource('route-stops')) return;
-
-            try {
-                console.log('[SYNC] Atualizando marcadores após exclusão de', deletedClients.length, 'cliente(s)');
-
-                const source = map.getSource('route-stops');
-                if (!source || !source._data) return;
-
-                const currentData = source._data;
-                if (!currentData || !currentData.features) return;
-
-                // Coleta endereços deletados normalizados para comparação
-                const deletedAddressesNormalized = new Set();
-                for (const client of deletedClients) {
-                    if (client.address) {
-                        deletedAddressesNormalized.add(normalizeAddressForComparison(client.address));
-                    }
-                }
-
-                if (deletedAddressesNormalized.size === 0) {
-                    console.log('[SYNC] Nenhum endereço para atualizar marcadores');
-                    return;
-                }
-
-                let updated = false;
-                const iconsToGenerate = new Set();
-
-                const updatedFeatures = currentData.features.map(feature => {
-                    const props = feature.properties;
-
-                    // Verifica se este marcador corresponde a um cliente deletado pelo endereço
-                    const markerAddress = props.address || props.allAddresses || '';
-                    const normalizedMarkerAddr = normalizeAddressForComparison(markerAddress);
-
-                    if (deletedAddressesNormalized.has(normalizedMarkerAddr)) {
-                        updated = true;
-
-                        // Determina o novo ícone baseado no status de entrega
-                        const packageCount = props.packageCount || 1;
-                        let newIconId;
-                        if (props.deliveryStatus === 'delivered') {
-                            newIconId = `pin-green-${Math.min(packageCount, 9)}`;
-                        } else if (props.deliveryStatus === 'not_delivered') {
-                            newIconId = `pin-red-${Math.min(packageCount, 9)}`;
-                        } else {
-                            newIconId = `pin-yellow-${Math.min(packageCount, 9)}`; // Pendente/não cadastrado
-                        }
-                        iconsToGenerate.add(newIconId);
-
-                        // Reverte para estado "não cadastrado"
-                        return {
-                            ...feature,
-                            properties: {
-                                ...props,
-                                isRegistered: false,
-                                matchType: null,
-                                matchedClientAddress: null,
-                                icon: newIconId
-                            }
-                        };
-                    }
-                    return feature;
-                });
-
-                if (updated) {
-                    // Gera ícones necessários antes de atualizar o mapa
-                    for (const iconId of iconsToGenerate) {
-                        if (!map.hasImage(iconId)) {
-                            try {
-                                const parts = iconId.split('-');
-                                const color = parts[1];
-                                const count = parseInt(parts[2]) || 1;
-                                const colorMap = { green: '#10B981', red: '#EF4444', yellow: '#F59E0B' };
-                                const img = await generatePinIcon(colorMap[color] || '#F59E0B', count);
-                                if (!map.hasImage(iconId)) {
-                                    map.addImage(iconId, img);
-                                }
-                            } catch (e) {
-                                console.warn('[SYNC] Erro ao gerar ícone:', iconId, e);
-                            }
-                        }
-                    }
-
-                    const newGeojson = {
-                        type: 'FeatureCollection',
-                        features: updatedFeatures
-                    };
-                    source.setData(newGeojson);
-
-                    // Atualiza stats
-                    const stats = {
-                        total: updatedFeatures.filter(f => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
-                        registered: updatedFeatures.filter(f => f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
-                        unregistered: updatedFeatures.filter(f => !f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
-                        pending: updatedFeatures.reduce((sum, f) => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered' ? sum + (f.properties.packageCount || 1) : sum, 0),
-                        delivered: updatedFeatures.reduce((sum, f) => f.properties.deliveryStatus === 'delivered' || f.properties.deliveryStatus === 'not_delivered' ? sum + (f.properties.packageCount || 1) : sum, 0)
-                    };
-
-                    // Salva no cache local e Supabase
-                    await saveRouteMarkersToCache(newGeojson, stats);
-                    updateFixedStatsPanel(stats);
-
-                    console.log('[SYNC] Marcadores atualizados após exclusão - revertidos:', deletedClients.length);
-                }
-            } catch (err) {
-                console.error('[SYNC] Erro ao atualizar marcadores após exclusão:', err);
             }
         }
 
@@ -6654,9 +6433,7 @@
                     const pendingClients = await countPendingItems('pendingClients');
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                    // CORREÇÃO: Adiciona pendingDeletes à verificação
-                    const pendingDeletes = await countPendingItems('pendingDeletes');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0;
+                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
@@ -6700,13 +6477,6 @@
                         if (Object.keys(syncResult.syncedStatusChanges).length > 0) {
                             await waitForIdle();
                             updateRouteMarkersStatus(syncResult.syncedStatusChanges);
-                        }
-
-                        // CORREÇÃO: Step 3d: Atualiza marcadores de rota após exclusões sincronizadas
-                        if (syncResult.syncedDeletedClients && syncResult.syncedDeletedClients.length > 0) {
-                            await waitForIdle();
-                            await updateRouteMarkersAfterDeleteSync(syncResult.syncedDeletedClients);
-                            await longYield();
                         }
                     }
 
@@ -8929,10 +8699,8 @@
                         await removeOfflineClientById(id, address);
                     } else {
                         // Cliente do Supabase - salva exclusão para sincronizar depois
-                        // CORREÇÃO: Salva também o endereço para atualizar marcadores de rota após sync
                         await saveToOfflineDB('pendingDeletes', {
                             clientId: id,
-                            clientAddress: address, // Usado para encontrar marcador de rota
                             deletedAt: new Date().toISOString(),
                             synced: false
                         });
@@ -9212,18 +8980,76 @@
 
                     if (isMatch) {
                         foundExisting = true;
-                        // Atualiza tanto marcadores não registrados (vermelho) quanto marcadores de similaridade (roxo)
-                        if (!props.isRegistered || props.matchType === 'similarity') {
+
+                        // Verifica se as coordenadas mudaram (para marcadores já verdes que precisam de atualização)
+                        const currentCoords = feature.geometry.coordinates;
+                        const coordsChanged = currentCoords[0] !== clientData.longitude ||
+                                              currentCoords[1] !== clientData.latitude;
+
+                        // Atualiza marcadores em 3 casos:
+                        // 1. Não registrados (vermelho) - cadastro novo
+                        // 2. Similaridade (roxo) - confirmação de match
+                        // 3. Já registrados (verde) mas com coordenadas diferentes - AJUSTE DE POSIÇÃO
+                        if (!props.isRegistered || props.matchType === 'similarity' || coordsChanged) {
                             updated = true;
-                            const packageCount = props.packageCount || 1;
-                            const newIconId = `pin-green-${packageCount}`;
-                            iconsToGenerate.add(newIconId);
 
                             // Salva dados originais para permitir reversão após exclusão do cliente
-                            const previousMatchType = props.matchType || null;
-                            const previousMatchedClientAddress = props.matchedClientAddress || '';
-                            const previousCoordinates = feature.geometry.coordinates;
-                            const previousIsRegistered = props.isRegistered || false;
+                            // IMPORTANTE: Só salva previousCoordinates se ainda não existe (evita sobrescrever o original)
+                            const previousMatchType = props.previousMatchType || props.matchType || null;
+                            const previousMatchedClientAddress = props.previousMatchedClientAddress || props.matchedClientAddress || '';
+                            const previousCoordinates = props.previousCoordinates || JSON.stringify(currentCoords);
+                            const previousIsRegistered = props.previousIsRegistered !== undefined ? props.previousIsRegistered : (props.isRegistered || false);
+
+                            // Atualiza addressSequencePairs para marcar APENAS o endereço cadastrado como 'exact'
+                            let updatedAddressSequencePairs = props.addressSequencePairs;
+                            if (props.addressSequencePairs) {
+                                try {
+                                    let pairs = typeof props.addressSequencePairs === 'string'
+                                        ? JSON.parse(props.addressSequencePairs)
+                                        : props.addressSequencePairs;
+
+                                    // Atualiza o matchType do endereço cadastrado para 'exact'
+                                    pairs = pairs.map(pair => {
+                                        const pairNormalized = normalizeAddressForComparison(pair.address);
+                                        if (pairNormalized === normalizedNewAddr) {
+                                            return { ...pair, matchType: 'exact' };
+                                        }
+                                        return pair;
+                                    });
+
+                                    updatedAddressSequencePairs = JSON.stringify(pairs);
+                                } catch (e) {
+                                    // Mantém o original se der erro
+                                }
+                            }
+
+                            // Verifica se ainda há endereços não cadastrados no grupo
+                            // para determinar a cor correta do marcador
+                            let hasUnregisteredAddresses = false;
+                            let finalMatchType = 'exact';
+                            if (updatedAddressSequencePairs) {
+                                try {
+                                    const pairs = typeof updatedAddressSequencePairs === 'string'
+                                        ? JSON.parse(updatedAddressSequencePairs)
+                                        : updatedAddressSequencePairs;
+
+                                    // Se algum endereço não tem matchType 'exact', ainda há pendências
+                                    hasUnregisteredAddresses = pairs.some(pair =>
+                                        pair.matchType !== 'exact'
+                                    );
+
+                                    if (hasUnregisteredAddresses) {
+                                        // Mantém roxo se ainda há endereços por cadastrar
+                                        finalMatchType = 'similarity';
+                                    }
+                                } catch (e) {}
+                            }
+
+                            // Define a cor do marcador baseado no status
+                            const packageCount = props.packageCount || 1;
+                            const markerColor = hasUnregisteredAddresses ? 'purple' : 'green';
+                            const newIconId = `pin-${markerColor}-${packageCount}`;
+                            iconsToGenerate.add(newIconId);
 
                             return {
                                 ...feature,
@@ -9234,14 +9060,15 @@
                                 properties: {
                                     ...props,
                                     isRegistered: true,
-                                    matchType: 'exact',
+                                    matchType: finalMatchType,
                                     icon: newIconId,
                                     latitude: clientData.latitude,
                                     longitude: clientData.longitude,
-                                    // Salva estado anterior para reversão
+                                    addressSequencePairs: updatedAddressSequencePairs,
+                                    // Salva estado anterior para reversão (preserva o original)
                                     previousMatchType: previousMatchType,
                                     previousMatchedClientAddress: previousMatchedClientAddress,
-                                    previousCoordinates: JSON.stringify(previousCoordinates),
+                                    previousCoordinates: previousCoordinates,
                                     previousIsRegistered: previousIsRegistered
                                 }
                             };
@@ -9289,7 +9116,10 @@
                                         allAddresses: clientData.address,
                                         addressSequencePairs: JSON.stringify(matchingItems.map(i => ({
                                             address: i.destination_address,
-                                            sequence: i.sequence
+                                            sequence: i.sequence,
+                                            bairro: i.bairro || '',
+                                            zipcode: i.zipcode || '',
+                                            matchType: 'exact' // Novo marcador criado após cadastro = exato
                                         }))),
                                         sequences: sequences,
                                         isRegistered: true,
@@ -9542,6 +9372,61 @@
                         updated = true;
                         const packageCount = props.packageCount || 1;
 
+                        // NOVO: Atualiza addressSequencePairs para marcar o endereço excluído
+                        let updatedAddressSequencePairs = props.addressSequencePairs;
+                        let remainingExactCount = 0;
+                        let hasSimilarityAddresses = false;
+
+                        if (props.addressSequencePairs) {
+                            try {
+                                let pairs = typeof props.addressSequencePairs === 'string'
+                                    ? JSON.parse(props.addressSequencePairs)
+                                    : props.addressSequencePairs;
+
+                                // Reverte o matchType do endereço excluído para o estado original
+                                pairs = pairs.map(pair => {
+                                    const pairNormalized = normalizeAddressForComparison(pair.address);
+                                    if (pairNormalized === normalizedDeletedAddr) {
+                                        // Volta para similarity ou null baseado no previousMatchType
+                                        return {
+                                            ...pair,
+                                            matchType: props.previousMatchType || null
+                                        };
+                                    }
+                                    return pair;
+                                });
+
+                                // Conta quantos endereços ainda estão cadastrados (exact)
+                                remainingExactCount = pairs.filter(p => p.matchType === 'exact').length;
+                                hasSimilarityAddresses = pairs.some(p => p.matchType === 'similarity' || p.matchType === null);
+
+                                updatedAddressSequencePairs = JSON.stringify(pairs);
+                            } catch (e) {
+                                // Mantém o original se der erro
+                            }
+                        }
+
+                        // Se ainda há endereços cadastrados no grupo, mantém o marcador atualizado
+                        if (remainingExactCount > 0) {
+                            // Ainda há endereços cadastrados - atualiza apenas o addressSequencePairs
+                            // A cor depende se há endereços não cadastrados
+                            const newColor = hasSimilarityAddresses ? 'purple' : 'green';
+                            const newIconId = `pin-${newColor}-${packageCount}`;
+                            iconsToGenerate.add(newIconId);
+
+                            return {
+                                ...feature,
+                                properties: {
+                                    ...props,
+                                    matchType: hasSimilarityAddresses ? 'similarity' : 'exact',
+                                    icon: newIconId,
+                                    addressSequencePairs: updatedAddressSequencePairs
+                                }
+                            };
+                        }
+
+                        // Nenhum endereço cadastrado restante - volta ao estado original
+
                         // PRIORIDADE 1: Verificar se tinha estado anterior salvo (similaridade/roxo)
                         if (props.previousMatchType === 'similarity' && props.previousCoordinates) {
                             try {
@@ -9563,6 +9448,7 @@
                                         icon: newIconId,
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
+                                        addressSequencePairs: updatedAddressSequencePairs,
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -9593,6 +9479,7 @@
                                     icon: newIconId,
                                     latitude: planilhaItem.latitude,
                                     longitude: planilhaItem.longitude,
+                                    addressSequencePairs: updatedAddressSequencePairs,
                                     // Limpa dados salvos
                                     previousMatchType: null,
                                     previousMatchedClientAddress: null,
@@ -9622,6 +9509,7 @@
                                         icon: newIconId,
                                         latitude: previousCoords[1],
                                         longitude: previousCoords[0],
+                                        addressSequencePairs: updatedAddressSequencePairs,
                                         // Limpa dados salvos
                                         previousMatchType: null,
                                         previousMatchedClientAddress: null,
@@ -10477,7 +10365,7 @@
                     // PROTEÇÃO ADICIONAL: Verifica novamente se houve alteração local durante a execução assíncrona
                     // Isso evita sobrescrever uma alteração do usuário que ocorreu enquanto buscávamos dados do servidor
                     if (Date.now() - lastRouteMarkersSave < 2000) {
-                        console.log('⏸️ Sync cancelado: alteração local detectada durante execução');
+                        console.log('⏸️ Sync cancelado: alteraç��o local detectada durante execução');
                         return;
                     }
 
@@ -11107,7 +10995,15 @@
                     // Convert written numbers to digits (Dezesseis -> 16)
                     cleanAddr = convertWrittenNumbers(cleanAddr);
 
-                    return cleanAddr
+                    // STEP 1: Protect highway codes BEFORE normalization
+                    // Matches: PA-391, BR-316, GO-020, SP-270, etc. (state/federal highways)
+                    // Also matches without hyphen: PA 391, BR 316
+                    // Preserves the full code as "RODOVIA_XX_NNN" placeholder
+                    cleanAddr = cleanAddr.replace(/\b(pa|br|go|mg|sp|rj|rs|pr|sc|ba|ce|pe|ma|pi|mt|ms|to|am|ac|ro|rr|ap|se|al|rn|pb|es|df)\s*[-]?\s*(\d{1,4})\b/gi,
+                        (match, state, num) => `RODOVIA_${state.toUpperCase()}_${num}`);
+
+                    // STEP 2: Apply standard normalizations
+                    cleanAddr = cleanAddr
                         .toLowerCase()
                         .trim()
                         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove accents
@@ -11126,6 +11022,13 @@
                         .replace(/\b(santo|santa|sao|sta|sto)\b/gi, '') // Remove saint titles
                         .replace(/\s+/g, ' ')
                         .trim();
+
+                    // STEP 3: Restore highway codes in normalized format (lowercase, readable)
+                    // "rodovia_pa_391" -> "pa391" (compact identifier for comparison)
+                    cleanAddr = cleanAddr.replace(/rodovia_([a-z]{2})_(\d+)/gi,
+                        (match, state, num) => `${state.toLowerCase()}${num}`);
+
+                    return cleanAddr;
                 }
 
                 // Calculate distance between two coordinates in km
@@ -11382,8 +11285,15 @@
                 function extractStreetNameWords(addr) {
                     if (!addr) return [];
 
-                    // Normalize the address
-                    let text = addr
+                    // STEP 1: Protect highway codes BEFORE processing
+                    // Converts "PA-391", "BR-316", "PA 391" etc. to "pa391", "br316"
+                    let text = addr.replace(
+                        /\b(pa|br|go|mg|sp|rj|rs|pr|sc|ba|ce|pe|ma|pi|mt|ms|to|am|ac|ro|rr|ap|se|al|rn|pb|es|df)\s*[-]?\s*(\d{1,4})\b/gi,
+                        (match, state, num) => `${state.toLowerCase()}${num}`
+                    );
+
+                    // STEP 2: Normalize the address
+                    text = text
                         .toLowerCase()
                         .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
                         .replace(/[.,;:\-\/\\()]/g, ' ') // Replace punctuation
@@ -11415,7 +11325,7 @@
                         .filter(w => {
                             // Must be at least 3 characters
                             if (w.length < 3) return false;
-                            // Must not be a number
+                            // Must not be a pure number (but allow alphanumeric like "pa391")
                             if (/^\d+$/.test(w)) return false;
                             // Must not be in exclude list
                             if (excludeWords.has(w)) return false;
@@ -11581,10 +11491,21 @@
 
                     // Se encontrou um match, determinar se foi exato ou por similaridade
                     if (bestMatch) {
-                        // Match exato: similarity >= 0.95 (endereços quase idênticos após normalização)
+                        // Match exato: quando os endereços normalizados são IDÊNTICOS ou têm similaridade >= 99%
+                        // 99% tolera pequenas diferenças de formatação (espaços, pontuação)
+                        // mas ainda exige que sejam essencialmente o mesmo endereço
+                        // Endereços como "Rua X, 111" vs "Rua X, 111, Alameda Y" terão similaridade < 99%
                         const normalizedBestClient = normalizeAddress(bestMatch.address);
-                        const finalSimilarity = textSimilarity(normalizedAddr, normalizedBestClient);
-                        const isExactMatch = finalSimilarity >= 0.95;
+
+                        // Primeiro verifica igualdade estrita (mais rápido)
+                        let isExactMatch = normalizedAddr === normalizedBestClient;
+
+                        // Se não for igual, verifica se são muito similares (99%+)
+                        // para tolerar pequenas diferenças de formatação
+                        if (!isExactMatch) {
+                            const similarity = textSimilarity(normalizedAddr, normalizedBestClient);
+                            isExactMatch = similarity >= 0.99;
+                        }
 
                         return {
                             client: bestMatch,
@@ -11846,7 +11767,7 @@
                     const ids = [];
                     const allAddresses = []; // Store all unique addresses in this group
                     const allAddressesWithDetails = []; // Store addresses with bairro/zipcode for matching
-                    const addressSequencePairs = []; // Store address+sequence pairs
+                    const addressSequencePairsTemp = []; // Temporary storage for address+sequence pairs
                     let deliveryStatus = null;
                     mergedItems.forEach(item => {
                         if (item.sequence && !sequences.includes(item.sequence)) {
@@ -11867,11 +11788,13 @@
                                 zipcode: item.zipcode
                             });
                         }
-                        // Store address+sequence pairs for popup display
+                        // Store address+sequence pairs temporarily (matchType será adicionado depois)
                         if (item.destination_address && item.sequence) {
-                            addressSequencePairs.push({
+                            addressSequencePairsTemp.push({
                                 address: item.destination_address,
-                                sequence: item.sequence
+                                sequence: item.sequence,
+                                bairro: item.bairro,
+                                zipcode: item.zipcode
                             });
                         }
                         // Use the first non-null delivery_status found
@@ -11883,13 +11806,29 @@
                     // Check if ANY address in this group has a registered client (Option 1: at least one)
                     // Collect ALL registered clients for this group, then cluster their coordinates
                     // PERFORMANCE: Usar cache para evitar recálculos
+                    // Também cria um mapa de matchType por endereço para uso na lista manual
                     const registeredMatches = [];
+                    const addressMatchMap = new Map(); // Mapa endereço -> matchType individual
                     for (const addrDetails of allAddressesWithDetails) {
                         const match = getCachedClientMatch(addrDetails.address, addrDetails.bairro, addrDetails.zipcode);
                         if (match) {
                             registeredMatches.push(match);
+                            // Armazena o matchType individual deste endereço
+                            addressMatchMap.set(addrDetails.address, match.matchType);
+                        } else {
+                            // Sem match = não cadastrado
+                            addressMatchMap.set(addrDetails.address, null);
                         }
                     }
+
+                    // Agora constrói addressSequencePairs com o matchType individual de cada endereço
+                    const addressSequencePairs = addressSequencePairsTemp.map(pair => ({
+                        address: pair.address,
+                        sequence: pair.sequence,
+                        bairro: pair.bairro,
+                        zipcode: pair.zipcode,
+                        matchType: addressMatchMap.get(pair.address) || null // 'exact', 'similarity', ou null
+                    }))
 
                     // Determine match type: 'exact' if ALL matches are exact, 'similarity' if at least one is similarity
                     let matchType = null;
@@ -13651,7 +13590,7 @@
         let torchSupported = false; // Se o dispositivo suporta lanterna
         let lastBrightnessCheck = 0; // Timestamp da última verificação de luminosidade
         const BRIGHTNESS_CHECK_INTERVAL = 500; // Verificar a cada 500ms
-        const DARK_THRESHOLD = 50; // Limiar de escuridão (0-255, menor = mais escuro)
+        const DARK_THRESHOLD = 20; // Limiar de escuridão (0-255, menor = mais escuro)
 
         // Open QR Scanner
         cadastrarBtn.addEventListener('click', () => {
@@ -13873,7 +13812,7 @@
                                     (typeof props.allAddresses === 'string' ? props.allAddresses.split('|||') : props.allAddresses) :
                                     [props.address];
 
-                                // Verifica se algum endereço corresponde
+                                // Verifica se algum endere��o corresponde
                                 const normalizedAddresses = addresses.map(a => normalizeAddressForComparison(a));
                                 if (normalizedAddresses.includes(normalizedAddressToCheck)) {
                                     // Retorna como cliente existente
@@ -14046,14 +13985,11 @@
                     // - Roxos: isRegistered === true + matchType === 'similarity' (match por similaridade, não exato)
                     // NÃO inclui:
                     // - Verdes: isRegistered === true + matchType === 'exact' (já cadastrado exatamente)
-                    // - Finalizados: deliveryStatus === 'delivered' ou 'not_delivered'
+                    // NOTA: O status de entrega (delivered/not_delivered) NÃO afeta a lista de cadastro
+                    // Um endereço pode ser marcado como entregue mas ainda precisar ser cadastrado
                     const unregisteredAddresses = features
                         .filter(f => {
                             const props = f.properties;
-
-                            // Não finalizado
-                            const isNotDelivered = props.deliveryStatus !== 'delivered' && props.deliveryStatus !== 'not_delivered';
-                            if (!isNotDelivered) return false;
 
                             // Verifica se NÃO está cadastrado (vermelho)
                             const isNotRegistered = props.isRegistered === false || props.isRegistered === 'false' ||
@@ -14065,47 +14001,85 @@
 
                             return isNotRegistered || isSimilarityMatch;
                         })
-                        .map(f => {
+                        .flatMap(f => {
                             const props = f.properties;
 
-                            // allAddresses é armazenado como string 'addr1|||addr2|||addr3'
-                            let addresses = [];
-                            if (props.allAddresses) {
-                                if (typeof props.allAddresses === 'string') {
-                                    addresses = props.allAddresses.split('|||').filter(Boolean);
-                                } else if (Array.isArray(props.allAddresses)) {
-                                    addresses = props.allAddresses;
+                            // Usa addressSequencePairs que contém matchType individual de cada endereço
+                            let addressPairs = [];
+                            if (props.addressSequencePairs) {
+                                try {
+                                    if (typeof props.addressSequencePairs === 'string') {
+                                        addressPairs = JSON.parse(props.addressSequencePairs);
+                                    } else if (Array.isArray(props.addressSequencePairs)) {
+                                        addressPairs = props.addressSequencePairs;
+                                    }
+                                } catch (e) {
+                                    addressPairs = [];
                                 }
                             }
 
-                            // Primeiro endereço do grupo (ou address principal)
-                            const firstAddr = addresses[0] || props.address || '';
+                            // Se não tiver addressSequencePairs, fallback para método antigo
+                            if (addressPairs.length === 0) {
+                                // Fallback: allAddresses é armazenado como string 'addr1|||addr2|||addr3'
+                                let addresses = [];
+                                if (props.allAddresses) {
+                                    if (typeof props.allAddresses === 'string') {
+                                        addresses = props.allAddresses.split('|||').filter(Boolean);
+                                    } else if (Array.isArray(props.allAddresses)) {
+                                        addresses = props.allAddresses;
+                                    }
+                                }
 
-                            // sequences é armazenado como string '1, 2, 3'
-                            let sequences = [];
-                            if (props.sequences) {
-                                if (typeof props.sequences === 'string') {
-                                    sequences = props.sequences.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-                                } else if (Array.isArray(props.sequences)) {
-                                    sequences = props.sequences;
+                                // sequences é armazenado como string '1, 2, 3'
+                                let sequences = [];
+                                if (props.sequences) {
+                                    if (typeof props.sequences === 'string') {
+                                        sequences = props.sequences.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+                                    } else if (Array.isArray(props.sequences)) {
+                                        sequences = props.sequences;
+                                    }
+                                }
+
+                                // Cria pairs para o fallback
+                                addressPairs = addresses.map((addr, idx) => ({
+                                    address: addr,
+                                    sequence: sequences[idx] || 0,
+                                    matchType: props.matchType || null // Usa matchType do marcador
+                                }));
+
+                                // Se ainda vazio, usa endereço principal
+                                if (addressPairs.length === 0 && props.address) {
+                                    addressPairs = [{
+                                        address: props.address,
+                                        sequence: sequences[0] || 0,
+                                        matchType: props.matchType || null
+                                    }];
                                 }
                             }
-                            const firstSeq = sequences[0] || 0;
 
-                            return {
+                            // IMPORTANTE: Filtra apenas endereços que NÃO têm match exato
+                            // - matchType === 'exact' -> JÁ CADASTRADO, não mostra
+                            // - matchType === 'similarity' -> match por similaridade, MOSTRA
+                            // - matchType === null -> não cadastrado, MOSTRA
+                            const unregisteredPairs = addressPairs.filter(pair =>
+                                pair.matchType !== 'exact'
+                            );
+
+                            // Retorna um item para cada endereço não cadastrado do grupo
+                            return unregisteredPairs.map(pair => ({
                                 id: props.ids ? props.ids.split(',')[0] : props.id,
-                                sequence: firstSeq,
-                                destination_address: firstAddr,
-                                bairro: props.bairro || '',
+                                sequence: pair.sequence || 0,
+                                destination_address: pair.address || '',
+                                bairro: pair.bairro || props.bairro || '',
                                 city: props.city || '',
-                                zipcode: props.zipcode || '',
+                                zipcode: pair.zipcode || props.zipcode || '',
                                 latitude: f.geometry.coordinates[1],
                                 longitude: f.geometry.coordinates[0],
                                 // Dados extras para grupos
-                                allAddresses: addresses,
-                                allSequences: sequences,
+                                allAddresses: [pair.address],
+                                allSequences: [pair.sequence],
                                 allIds: props.ids
-                            };
+                            }));
                         })
                         .filter(addr => addr.destination_address) // Remove entradas sem endereço
                         .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
