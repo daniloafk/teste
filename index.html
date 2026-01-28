@@ -6458,7 +6458,8 @@
                     const pendingClients = await countPendingItems('pendingClients');
                     const pendingPlanilha = await countPendingItems('pendingPlanilha');
                     const pendingStatus = await countPendingItems('pendingDeliveryStatus');
-                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0;
+                    const pendingDeletes = await countPendingItems('pendingDeletes');
+                    const hasPendingData = pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0;
 
                     // Step 2: Só sincroniza se houver dados pendentes
                     // syncAllPendingData agora retorna o que foi sincronizado
@@ -7417,9 +7418,10 @@
                         const pendingClients = await countPendingItems('pendingClients');
                         const pendingPlanilha = await countPendingItems('pendingPlanilha');
                         const pendingStatus = await countPendingItems('pendingDeliveryStatus');
+                        const pendingDeletes = await countPendingItems('pendingDeletes');
 
-                        // Só sincroniza se houver dados pendentes
-                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0) {
+                        // Só sincroniza se houver dados pendentes (incluindo exclusões)
+                        if (pendingClients > 0 || pendingPlanilha > 0 || pendingStatus > 0 || pendingDeletes > 0) {
                             syncAllPendingData();
                         }
                     } catch (e) {
