@@ -5847,11 +5847,15 @@
         }
 
         // Sync pending deletes to Supabase
+        // Retorna objeto com IDs deletados e endereços para reverter marcadores
         async function syncPendingDeletes() {
-            const deletedIds = [];
+            const result = {
+                deletedIds: [],
+                deletedAddresses: []
+            };
             try {
                 const pendingDeletes = await getPendingFromOfflineDB('pendingDeletes');
-                if (pendingDeletes.length === 0) return deletedIds;
+                if (pendingDeletes.length === 0) return result;
 
                 for (const item of pendingDeletes) {
                     try {
@@ -5869,7 +5873,12 @@
 
                         // Remove da fila de pendentes
                         await deleteSyncedFromOfflineDB('pendingDeletes', item.localId);
-                        deletedIds.push(item.clientId);
+                        result.deletedIds.push(item.clientId);
+
+                        // Guarda endereço para reverter marcador de rota
+                        if (item.clientAddress) {
+                            result.deletedAddresses.push(item.clientAddress);
+                        }
                     } catch (err) {
                         // Erro na sincronização desta exclusão
                         console.error('Erro ao sincronizar exclusão:', err);
@@ -5879,7 +5888,7 @@
                 // Erro ao obter exclusões pendentes
                 console.error('Erro ao obter exclusões pendentes:', err);
             }
-            return deletedIds;
+            return result;
         }
 
         // Main sync function - syncs all pending data
@@ -5891,6 +5900,7 @@
                 syncedStatusChanges: {},
                 syncedSimilarityChanges: false,
                 syncedDeletedIds: [],
+                syncedDeletedAddresses: [],
                 hadChanges: false
             };
 
@@ -6033,9 +6043,22 @@
                 await longYield();
 
                 // Sync pending deletes
-                const deletedIds = await syncPendingDeletes();
-                syncResult.syncedDeletedIds = deletedIds || [];
+                const deleteResult = await syncPendingDeletes();
+                syncResult.syncedDeletedIds = deleteResult.deletedIds || [];
+                syncResult.syncedDeletedAddresses = deleteResult.deletedAddresses || [];
                 await longYield();
+
+                // Reverte os marcadores de rota para os clientes excluídos
+                if (syncResult.syncedDeletedAddresses.length > 0 && map && map.getSource('route-stops')) {
+                    for (const address of syncResult.syncedDeletedAddresses) {
+                        try {
+                            await revertRouteMarkerAfterClientDeletion({ address });
+                        } catch (revertErr) {
+                            console.error('Erro ao reverter marcador após sync de exclusão:', revertErr);
+                        }
+                    }
+                    await yieldToMain();
+                }
 
                 // Verifica se houve alguma mudança
                 syncResult.hadChanges =
@@ -6045,12 +6068,14 @@
                     syncResult.syncedSimilarityChanges ||
                     syncResult.syncedDeletedIds.length > 0;
 
-                // IMPORTANTE: Se houve mudanças de status, similarity OU clientes, atualiza o route_markers_cache no Supabase
+                // IMPORTANTE: Se houve mudanças de status, similarity, clientes OU exclusões, atualiza o route_markers_cache no Supabase
                 // Isso garante que outros dispositivos recebam as alterações via polling de versão
                 // INCLUI syncedClientAddresses para sincronizar posições de marcadores após cadastro offline
+                // INCLUI syncedDeletedIds para sincronizar reversão de marcadores após exclusão offline
                 const hasAnyMarkerChanges = Object.keys(syncResult.syncedStatusChanges).length > 0 ||
                                             syncResult.syncedSimilarityChanges ||
-                                            syncResult.syncedClientAddresses.length > 0;
+                                            syncResult.syncedClientAddresses.length > 0 ||
+                                            syncResult.syncedDeletedIds.length > 0;
                 if (hasAnyMarkerChanges && map && map.getSource('route-stops')) {
                     try {
                         const source = map.getSource('route-stops');
@@ -8699,15 +8724,18 @@
                         await removeOfflineClientById(id, address);
                     } else {
                         // Cliente do Supabase - salva exclusão para sincronizar depois
+                        // Salva também o endereço para reverter o marcador de rota
                         await saveToOfflineDB('pendingDeletes', {
                             clientId: id,
+                            clientAddress: address,
                             deletedAt: new Date().toISOString(),
                             synced: false
                         });
                     }
 
                     showQuickSuccess();
-                    await removeSingleClientFromUI(id);
+                    // Passa o endereço para garantir reversão correta do marcador de rota
+                    await removeSingleClientFromUI(id, address);
                     updateOfflineIndicator();
                     return;
                 }
@@ -8717,7 +8745,7 @@
                     // Cliente offline que ainda não foi sincronizado - apenas remove localmente
                     await removeOfflineClientById(id, address);
                     showQuickSuccess();
-                    await removeSingleClientFromUI(id);
+                    await removeSingleClientFromUI(id, address);
                     return;
                 }
 
@@ -8732,7 +8760,7 @@
                 showQuickSuccess();
 
                 // PERFORMANCE: Remove incrementalmente em vez de recarregar tudo
-                await removeSingleClientFromUI(id);
+                await removeSingleClientFromUI(id, address);
             } catch (error) {
                 ErrorHandler.handle(error, { action: 'deleteCliente', id }, {
                     customMessage: 'Erro ao excluir cliente. Tente novamente.'
@@ -9255,7 +9283,7 @@
         }
 
         // PERFORMANCE: Remove um único cliente da UI e caches sem recarregar tudo
-        async function removeSingleClientFromUI(clientId) {
+        async function removeSingleClientFromUI(clientId, clientAddress = null) {
             try {
                 // Converte para string para comparação consistente
                 const clientIdStr = String(clientId);
@@ -9264,27 +9292,70 @@
                 let removedClient = null;
                 if (clientesCache.data) {
                     removedClient = clientesCache.data.find(c => String(c.id) === clientIdStr);
+                    // Fallback: busca por endereço se não encontrar por ID
+                    if (!removedClient && clientAddress) {
+                        const normalizedAddr = normalizeAddressForComparison(clientAddress);
+                        removedClient = clientesCache.data.find(c =>
+                            c.address && normalizeAddressForComparison(c.address) === normalizedAddr
+                        );
+                    }
                 }
                 if (!removedClient && allClientes) {
                     removedClient = allClientes.find(c => String(c.id) === clientIdStr);
+                    // Fallback: busca por endereço se não encontrar por ID
+                    if (!removedClient && clientAddress) {
+                        const normalizedAddr = normalizeAddressForComparison(clientAddress);
+                        removedClient = allClientes.find(c =>
+                            c.address && normalizeAddressForComparison(c.address) === normalizedAddr
+                        );
+                    }
                 }
 
-                // 1. Remover do cache em memória
+                // Se ainda não encontrou mas temos o endereço, cria objeto mínimo para reverter marcador
+                if (!removedClient && clientAddress) {
+                    removedClient = { id: clientId, address: clientAddress };
+                }
+
+                // 1. Remover do cache em memória (por ID e por endereço)
                 if (clientesCache.data) {
-                    clientesCache.data = clientesCache.data.filter(c => String(c.id) !== clientIdStr);
+                    clientesCache.data = clientesCache.data.filter(c => {
+                        if (String(c.id) === clientIdStr) return false;
+                        if (clientAddress && c.address) {
+                            const normalizedClientAddr = normalizeAddressForComparison(c.address);
+                            const normalizedDeleteAddr = normalizeAddressForComparison(clientAddress);
+                            if (normalizedClientAddr === normalizedDeleteAddr) return false;
+                        }
+                        return true;
+                    });
                     clientesCache.timestamp = Date.now();
                 }
 
-                // 2. Remover de allClientes
+                // 2. Remover de allClientes (por ID e por endereço)
                 if (allClientes) {
-                    allClientes = allClientes.filter(c => String(c.id) !== clientIdStr);
+                    allClientes = allClientes.filter(c => {
+                        if (String(c.id) === clientIdStr) return false;
+                        if (clientAddress && c.address) {
+                            const normalizedClientAddr = normalizeAddressForComparison(c.address);
+                            const normalizedDeleteAddr = normalizeAddressForComparison(clientAddress);
+                            if (normalizedClientAddr === normalizedDeleteAddr) return false;
+                        }
+                        return true;
+                    });
                 }
 
-                // 3. Remover do IndexedDB cache
+                // 3. Remover do IndexedDB cache (por ID e por endereço)
                 try {
                     const cachedClients = await getAllFromOfflineDB('cachedClients');
                     if (cachedClients) {
-                        const filtered = cachedClients.filter(c => String(c.id) !== clientIdStr);
+                        const filtered = cachedClients.filter(c => {
+                            if (String(c.id) === clientIdStr) return false;
+                            if (clientAddress && c.address) {
+                                const normalizedClientAddr = normalizeAddressForComparison(c.address);
+                                const normalizedDeleteAddr = normalizeAddressForComparison(clientAddress);
+                                if (normalizedClientAddr === normalizedDeleteAddr) return false;
+                            }
+                            return true;
+                        });
                         await saveCacheToDB('cachedClients', filtered);
                     }
                 } catch (cacheErr) {}
@@ -9305,9 +9376,15 @@
                     const source = map.getSource('clientes');
                     const currentData = source._data;
                     if (currentData && currentData.features) {
-                        const filteredFeatures = currentData.features.filter(f =>
-                            String(f.properties.id) !== clientIdStr
-                        );
+                        const filteredFeatures = currentData.features.filter(f => {
+                            if (String(f.properties.id) === clientIdStr) return false;
+                            if (clientAddress && f.properties.address) {
+                                const normalizedFeatureAddr = normalizeAddressForComparison(f.properties.address);
+                                const normalizedDeleteAddr = normalizeAddressForComparison(clientAddress);
+                                if (normalizedFeatureAddr === normalizedDeleteAddr) return false;
+                            }
+                            return true;
+                        });
                         source.setData({
                             type: 'FeatureCollection',
                             features: filteredFeatures
@@ -9316,12 +9393,14 @@
                 }
 
                 // 6. Atualizar marcador de rota (reverter para estado original)
+                // Agora sempre tenta reverter se tivermos o endereço
                 if (removedClient && removedClient.address && map && map.getSource && map.getSource('route-stops')) {
                     await revertRouteMarkerAfterClientDeletion(removedClient);
                 }
 
             } catch (err) {
                 // Erro na remoção incremental - fallback para reload completo
+                console.error('Erro ao remover cliente da UI:', err);
                 await loadClientes();
             }
         }
@@ -9569,10 +9648,23 @@
                     // Atualiza estatísticas
                     const stats = updateRouteStatsAfterRegistration();
 
-                    // Salva cache atualizado
+                    // Salva cache atualizado (IndexedDB)
                     try {
-                        await saveRouteMarkersToCache(newGeojson, stats);
-                    } catch (cacheErr) {}
+                        await saveRouteMarkersToCache(newGeojson, stats, true); // skipSupabase = true, vamos salvar manualmente abaixo
+                    } catch (cacheErr) {
+                        console.error('Erro ao salvar cache local após exclusão:', cacheErr);
+                    }
+
+                    // IMPORTANTE: Para exclusões, força salvamento IMEDIATO no Supabase
+                    // Isso garante que outros dispositivos recebam a reversão do marcador
+                    if (isOnline) {
+                        try {
+                            await _doSaveRouteMarkersToSupabase(newGeojson, stats);
+                            console.log('☁️ Marcador de rota revertido e sincronizado com Supabase após exclusão');
+                        } catch (supabaseErr) {
+                            console.error('Erro ao sincronizar reversão de marcador com Supabase:', supabaseErr);
+                        }
+                    }
 
                     // Atualiza o fixed stats panel
                     updateFixedStatsPanel(stats);
