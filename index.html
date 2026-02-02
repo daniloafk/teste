@@ -1576,22 +1576,21 @@
             color: white;
         }
 
-        /* Navigation User Marker - stable (no lag) */
+        /* Navigation User Marker - smooth animated */
         .nav-user-marker {
-            width: 18px;
-            height: 18px;
+            width: 28px;
+            height: 28px;
             position: relative;
-            transition: none !important; /* evita "arrasto" ao mover o mapa */
-            will-change: auto;
+            transition: transform 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94);
         }
 
         .nav-user-dot {
-            width: 18px;
-            height: 18px;
+            width: 28px;
+            height: 28px;
             background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-            border: 2px solid white;
+            border: 4px solid white;
             border-radius: 50%;
-            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.55);
+            box-shadow: 0 3px 12px rgba(59, 130, 246, 0.6);
             position: absolute;
             top: 0;
             left: 0;
@@ -1602,9 +1601,9 @@
         }
 
         .nav-user-pulse {
-            width: 18px;
-            height: 18px;
-            background: rgba(59, 130, 246, 0.28);
+            width: 28px;
+            height: 28px;
+            background: rgba(59, 130, 246, 0.4);
             border-radius: 50%;
             position: absolute;
             top: 0;
@@ -1613,10 +1612,8 @@
         }
 
         @keyframes navPulse {
-            0% { transform: scale(1); opacity: 0.55; }
-            100% { transform: scale(2.4); opacity: 0; }
-        }
-100% { transform: scale(2.5); opacity: 0; }
+            0% { transform: scale(1); opacity: 0.6; }
+            100% { transform: scale(2.5); opacity: 0; }
         }
 
         .route-popup-content {
@@ -4706,7 +4703,7 @@
                 // Carrega scripts em paralelo para maior velocidade
                 await Promise.all([
                     loadScript('https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.js'),
-                    loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'),
+                    loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js'),
                     loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'),
                     loadScript('https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js')
                 ]);
@@ -15791,76 +15788,6 @@
             return (toDeg(Math.atan2(y, x)) + 360) % 360;
         }
 
-
-        // ============================================
-        // GPS FILTER - evita "saltos fantasmas"
-        // ============================================
-        const GpsFilter = {
-            last: null, // {lng, lat, t, accuracy}
-            // Ajustes conservadores para evitar pulo/teleporte
-            maxSpeedMps: 55,          // ~198 km/h (bem acima do normal, mas bloqueia teleport)
-            maxJumpMeters: 120,       // jump absoluto se dt pequeno
-            minDtMs: 250,             // ignora leituras "duplicadas" muito rápidas
-            maxAccuracyForUpdate: 80, // se accuracy muito ruim, ignora (metros)
-
-            haversineMeters(lng1, lat1, lng2, lat2) {
-                const R = 6371000;
-                const toRad = (d) => d * Math.PI / 180;
-                const dLat = toRad(lat2 - lat1);
-                const dLngfunction updateNavUserMarker(lng, lat, heading, accuracy) {
-            // Filtra saltos fantasmas / leituras ruins
-            if (!GpsFilter.shouldAccept(lng, lat, accuracy)) {
-                return;
-            }
-
-            if (!navUserMarker) {
-                createNavUserMarker(lng, lat);
-            } else {
-                navUserMarker.setLngLat([lng, lat]);
-            }
-
-            // Arrow direction removed
-        }
-
-        // Remove navigation marker       // Se a precisão está muito ruim, não atualiza (evita saltos por triangulação ruim)
-                if (typeof accuracy === 'number' && accuracy > this.maxAccuracyForUpdate) {
-                    return false;
-                }
-
-                if (!this.last) {
-                    this.last = { lng, lat, t: now, accuracy: accuracy ?? null };
-                    return true;
-                }
-
-                const dt = now - this.last.t;
-                if (dt < this.minDtMs) {
-                    return false;
-                }
-
-                const dist = this.haversineMeters(this.last.lng, this.last.lat, lng, lat);
-                const dtSec = dt / 1000;
-
-                // Rejeita teleporte muito grande em pouco tempo
-                if (dtSec <= 2 && dist > this.maxJumpMeters) {
-                    return false;
-                }
-
-                // Rejeita velocidade impossível
-                const speed = dist / Math.max(dtSec, 0.001);
-                if (speed > this.maxSpeedMps) {
-                    return false;
-                }
-
-                // Aceita e atualiza
-                this.last = { lng, lat, t: now, accuracy: accuracy ?? null };
-                return true;
-            },
-
-            reset() {
-                this.last = null;
-            }
-        };
-
         // Create smooth navigation marker
         function createNavUserMarker(lng, lat) {
             if (navUserMarker) {
@@ -16014,7 +15941,6 @@
 
             const lng = e.coords.longitude;
             const lat = e.coords.latitude;
-            const accuracy = e.coords.accuracy;
             let heading = e.coords.heading;
 
             // Calculate heading from movement if GPS doesn't provide it
@@ -16036,7 +15962,7 @@
             lastNavPosition = { lng, lat, heading };
 
             // Update custom marker (smooth via CSS transition)
-            updateNavUserMarker(lng, lat, heading, accuracy);
+            updateNavUserMarker(lng, lat, heading);
 
             // Check and recalculate route if user is off-route
             checkAndRecalculateRoute(lng, lat);
@@ -16237,7 +16163,6 @@
 
             // Reset last position
             lastNavPosition = null;
-            GpsFilter.reset();
 
             // Hide default geolocate marker
             setGeolocateMarkerVisible(false);
@@ -16283,7 +16208,6 @@
 
             // Reset last position
             lastNavPosition = null;
-            GpsFilter.reset();
 
             // Remove custom navigation marker
             removeNavUserMarker();
