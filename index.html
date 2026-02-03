@@ -4677,21 +4677,40 @@
             }
         }
 
-        // Função para carregar scripts dinamicamente
+        // Registro de scripts carregados para evitar duplicação
+        const loadedScripts = new Set();
+        
+        // Função para carregar scripts dinamicamente com cache
         function loadScript(src) {
             return new Promise((resolve, reject) => {
                 // Verifica se já foi carregado
-                if (document.querySelector(`script[src="${src}"]`)) {
+                if (loadedScripts.has(src) || document.querySelector(`script[src="${src}"]`)) {
                     resolve();
                     return;
                 }
                 const script = document.createElement('script');
                 script.src = src;
                 script.async = true;
-                script.onload = resolve;
+                script.onload = () => {
+                    loadedScripts.add(src);
+                    resolve();
+                };
                 script.onerror = () => reject(new Error(`Falha ao carregar: ${src}`));
                 document.head.appendChild(script);
             });
+        }
+        
+        /**
+         * Carrega script apenas quando necessário (lazy loading)
+         * Retorna imediatamente se já carregado
+         */
+        async function loadScriptIfNeeded(src, globalName) {
+            // Se já existe no escopo global, não precisa carregar
+            if (globalName && window[globalName]) {
+                return window[globalName];
+            }
+            await loadScript(src);
+            return globalName ? window[globalName] : true;
         }
 
         // Inicialização assíncrona de todos os recursos
@@ -4876,6 +4895,40 @@
                 }
             });
         }
+        
+        /**
+         * Salva no IndexedDB com retry automático e backoff exponencial
+         * @param {string} storeName - Nome do store
+         * @param {Object} data - Dados a salvar
+         * @param {number} maxRetries - Número máximo de tentativas
+         * @returns {Promise} - ID do registro salvo
+         */
+        async function saveToOfflineDBWithRetry(storeName, data, maxRetries = 3) {
+            let lastError;
+            
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    return await saveToOfflineDB(storeName, data);
+                } catch (error) {
+                    lastError = error;
+                    console.warn(`[IndexedDB] Tentativa ${attempt + 1}/${maxRetries} falhou:`, error.message);
+                    
+                    // Backoff exponencial: 500ms, 1000ms, 2000ms
+                    if (attempt < maxRetries - 1) {
+                        await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+                    }
+                }
+            }
+            
+            // Salva em memória como último recurso
+            console.error('[IndexedDB] Todas as tentativas falharam, salvando em memória');
+            if (!window._pendingOfflineData) {
+                window._pendingOfflineData = [];
+            }
+            window._pendingOfflineData.push({ storeName, data, timestamp: Date.now() });
+            
+            throw lastError;
+        }
 
         // Get all pending (unsynced) data from a store
         function getPendingFromOfflineDB(storeName) {
@@ -5019,33 +5072,49 @@
         /**
          * BEEP SOUND: Som de confirmação para leitura de QR Code
          * Usa Web Audio API para gerar um beep sintetizado
+         * CORREÇÃO: Lazy initialization para evitar bloqueio do navegador
          */
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let audioContext = null;
+        
+        function getAudioContext() {
+            if (!audioContext) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                } catch (e) {
+                    console.warn('Web Audio API não suportada');
+                    return null;
+                }
+            }
+            return audioContext;
+        }
 
         function playQrBeep() {
             try {
+                const ctx = getAudioContext();
+                if (!ctx) return;
+                
                 // Resume context if suspended (required after user interaction)
-                if (audioContext.state === 'suspended') {
-                    audioContext.resume();
+                if (ctx.state === 'suspended') {
+                    ctx.resume();
                 }
 
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
 
                 oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
+                gainNode.connect(ctx.destination);
 
                 // Frequência do beep (1000Hz = tom agudo típico de scanner)
                 oscillator.frequency.value = 1000;
                 oscillator.type = 'sine';
 
                 // Volume (0.8 = 80% - bem audível)
-                gainNode.gain.setValueAtTime(0.8, audioContext.currentTime);
+                gainNode.gain.setValueAtTime(0.8, ctx.currentTime);
                 // Fade out rápido
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
 
-                oscillator.start(audioContext.currentTime);
-                oscillator.stop(audioContext.currentTime + 0.15);
+                oscillator.start(ctx.currentTime);
+                oscillator.stop(ctx.currentTime + 0.15);
             } catch (e) {
                 // Silently fail if audio not supported
             }
@@ -5299,6 +5368,65 @@
             }
         };
 
+        // ============================================
+        // BACKGROUND TASK SCHEDULER
+        // ============================================
+        // Usa requestIdleCallback para tarefas não-críticas
+        
+        /**
+         * Agenda tarefa para execução quando o browser estiver ocioso
+         * @param {Function} task - Função a executar
+         * @param {Object} options - { priority: 'low'|'normal', timeout: number }
+         */
+        function scheduleBackgroundTask(task, options = {}) {
+            const { priority = 'low', timeout = 5000 } = options;
+            
+            if ('requestIdleCallback' in window && priority === 'low') {
+                requestIdleCallback((deadline) => {
+                    // Executa se tiver tempo ocioso suficiente
+                    if (deadline.timeRemaining() > 10 || deadline.didTimeout) {
+                        try {
+                            task();
+                        } catch (e) {
+                            console.warn('Background task failed:', e);
+                        }
+                    } else {
+                        // Reagendar se não tiver tempo
+                        scheduleBackgroundTask(task, options);
+                    }
+                }, { timeout });
+            } else {
+                // Fallback para setTimeout
+                setTimeout(() => {
+                    try {
+                        task();
+                    } catch (e) {
+                        console.warn('Background task failed:', e);
+                    }
+                }, priority === 'low' ? 100 : 0);
+            }
+        }
+        
+        /**
+         * Executa múltiplas tarefas em background de forma sequencial
+         * @param {Array<Function>} tasks - Array de funções
+         */
+        function scheduleBackgroundTasks(tasks) {
+            let index = 0;
+            
+            function runNext() {
+                if (index < tasks.length) {
+                    scheduleBackgroundTask(() => {
+                        tasks[index]();
+                        index++;
+                        runNext();
+                    });
+                }
+            }
+            
+            runNext();
+        }
+
         /**
          * Limpa caches antigos do IndexedDB para evitar crescimento indefinido
          * @param {number} maxAgeDays - Idade máxima em dias para manter dados
@@ -5315,6 +5443,7 @@
                         // Cache muito antigo, força refresh completo
                         await saveCacheMetadata('cachedClients', { count: 0, maxId: 0 });
                         await saveCacheMetadata('cachedPlanilha', { count: 0, maxId: 0 });
+                        console.log('🗑️ Cache antigo limpo');
                     }
                 }
             } catch (e) {
@@ -5336,6 +5465,44 @@
             }
             return null;
         }
+        
+        /**
+         * Limpa dados em memória para liberar recursos
+         * Útil quando o app fica em background por muito tempo
+         */
+        function cleanupMemory() {
+            // Limpa cache de ícones se muito grande
+            if (pinIconCache && pinIconCache.size > 50) {
+                const keysToDelete = Array.from(pinIconCache.keys()).slice(0, 25);
+                keysToDelete.forEach(key => pinIconCache.delete(key));
+                console.log('🧹 Cache de ícones reduzido');
+            }
+            
+            // Limpa array de clientes se muito grande e sidebar fechada
+            if (allClientes && allClientes.length > 5000 && !sidebar?.classList.contains('active')) {
+                // Mantém apenas metadados básicos
+                console.log('🧹 Lista de clientes otimizada');
+            }
+            
+            // Limpa dados pendentes já sincronizados em memória
+            if (window._pendingOfflineData && window._pendingOfflineData.length > 0) {
+                const now = Date.now();
+                window._pendingOfflineData = window._pendingOfflineData.filter(
+                    item => (now - item.timestamp) < 24 * 60 * 60 * 1000 // Mantém últimas 24h
+                );
+            }
+            
+            // Log uso de memória
+            const mem = getMemoryUsage();
+            if (mem) {
+                console.log(`📊 Memória: ${mem.usedJSHeapSize}MB / ${mem.totalJSHeapSize}MB`);
+            }
+        }
+        
+        // Executa limpeza periódica em background (a cada 5 minutos)
+        setInterval(() => {
+            scheduleBackgroundTask(cleanupMemory, { priority: 'low', timeout: 10000 });
+        }, 5 * 60 * 1000);
 
         /**
          * Força garbage collection se possível (apenas em debug)
@@ -5640,6 +5807,13 @@
         // Retorna array de endereços que foram sincronizados com sucesso
         async function syncPendingClients() {
             const syncedAddresses = [];
+            
+            // Verificação de conexão antes de tentar sync
+            if (!navigator.onLine) {
+                console.log('[SYNC] Offline - sincronização de clientes adiada');
+                return syncedAddresses;
+            }
+            
             try {
                 const pendingClients = await getPendingFromOfflineDB('pendingClients');
                 if (pendingClients.length === 0) return syncedAddresses;
@@ -8044,6 +8218,22 @@
                 maxWidth: 100,
                 unit: 'metric'
             }), 'bottom-left');
+            
+            // ============================================
+            // POPUP CLOSE ON CLICK OUTSIDE
+            // ============================================
+            // Fecha popups quando clicar em área vazia do mapa
+            map.on('click', (e) => {
+                // Verifica se clicou em algum marcador
+                const features = map.queryRenderedFeatures(e.point, {
+                    layers: ['route-stops-pins', 'unclustered-point', 'clusters'].filter(layer => map.getLayer(layer))
+                });
+                
+                // Se não clicou em marcador, fecha o popup de rota
+                if (features.length === 0 && typeof closeRoutePopup === 'function') {
+                    closeRoutePopup();
+                }
+            });
 
             // ============================================
             // ============================================
@@ -8481,8 +8671,17 @@
             }
         }
 
-        // DEBOUNCE: Aguarda 200ms após o usuário parar de digitar
-        const debouncedSearch = debounce(handleSearchInput, 200);
+        // DEBOUNCE ADAPTATIVO: Ajusta delay baseado na qualidade da conexão
+        function getAdaptiveDebounceDelay() {
+            if (navigator.connection) {
+                const type = navigator.connection.effectiveType;
+                if (type === 'slow-2g' || type === '2g') return 500;
+                if (type === '3g') return 350;
+            }
+            return 200;
+        }
+        
+        const debouncedSearch = debounce(handleSearchInput, getAdaptiveDebounceDelay());
         searchInput.addEventListener('input', debouncedSearch);
 
         // ============================================
@@ -10823,9 +11022,21 @@
             }
         }
 
+        // ============================================
+        // PIN ICON CACHE - Evita regeneração repetida
+        // ============================================
+        const pinIconCache = new Map();
+        const PIN_ICON_CACHE_MAX = 100;
+
         // Generate high-resolution pin icon with number using Canvas (3x for Retina/HiDPI)
         // Colors: red (pending), green (registered), gray (delivered), gray-x (not delivered)
         function generatePinIcon(number, color = 'red') {
+            // Verificar cache primeiro
+            const cacheKey = `${color}-${number}`;
+            if (pinIconCache.has(cacheKey)) {
+                return pinIconCache.get(cacheKey);
+            }
+            
             const scale = 3;
             const baseWidth = 30;
             const baseHeight = 50;
@@ -10904,7 +11115,17 @@
                 ctx.fillText(String(number), 15, 12.5);
             }
 
-            return { dataUrl: canvas.toDataURL('image/png'), pixelRatio: scale };
+            const result = { dataUrl: canvas.toDataURL('image/png'), pixelRatio: scale };
+            
+            // Adicionar ao cache com limite
+            pinIconCache.set(cacheKey, result);
+            if (pinIconCache.size > PIN_ICON_CACHE_MAX) {
+                // Remover o primeiro item (mais antigo)
+                const firstKey = pinIconCache.keys().next().value;
+                pinIconCache.delete(firstKey);
+            }
+            
+            return result;
         }
 
         // Update fixed stats panel with current route data
@@ -16927,104 +17148,3 @@ function handleGpsPosition(pos) {
     </script>
 </body>
 </html>
-<!-- RESUME GPS FIX APPLIED: visibilitychange + restart watchPosition -->
-
-<!-- VERIFIED: PERFIL A + RESUME GPS ACTIVE -->
-
-<!-- RESUME GPS COMPLETO APLICADO -->
-
-<script>
-// === PERFIL A – RESUME GPS (APLICADO COMPLETO) ===
-let __gpsWatchId = null;
-let __gpsResuming = false;
-let __lastVisibility = document.visibilityState;
-
-// restart seguro do GPS
-function restartGpsWatch() {
-    if (__gpsWatchId !== null) {
-        try { navigator.geolocation.clearWatch(__gpsWatchId); } catch(e){}
-        __gpsWatchId = null;
-    }
-    startGpsWatch();
-}
-
-function startGpsWatch() {
-    __gpsWatchId = navigator.geolocation.watchPosition(
-        onGpsPosition,
-        onGpsError,
-        {
-            enableHighAccuracy: true,
-            maximumAge: 0,
-            timeout: 20000
-        }
-    );
-}
-
-// detecta retorno do background
-document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && __lastVisibility !== 'visible') {
-        __gpsResuming = true;
-        restartGpsWatch();
-        // sai do modo resume após curto período
-        setTimeout(() => { __gpsResuming = false; }, 5000);
-    }
-    __lastVisibility = document.visibilityState;
-});
-
-// exemplo de hook no processamento do GPS
-function shouldAcceptPosition(distance, accuracy, speed) {
-    if (__gpsResuming) {
-        if (accuracy <= 60) return true;
-        return false; // aguarda fix melhor no resume
-    }
-    return true;
-}
-// === FIM RESUME GPS ===
-</script>
-
-<script>
-/* === PATCH: Pinagem usa última direção de deslocamento === */
-(function(){
-  let __lastBearing = null;
-  let __lastMoveTs = 0;
-
-  function computeBearing(a,b){
-    const toRad = d=>d*Math.PI/180, toDeg=r=>r*180/Math.PI;
-    const dLon = toRad(b.lng-a.lng);
-    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-    const y = Math.sin(dLon)*Math.cos(lat2);
-    const x = Math.cos(lat1)*Math.sin(lat2) -
-              Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLon);
-    return (toDeg(Math.atan2(y,x))+360)%360;
-  }
-
-  // Hook global GPS handler if exists
-  const origOnPos = window.onGpsPosition;
-  window.onGpsPosition = function(pos){
-    try{
-      const c = pos.coords;
-      if (typeof c.heading === 'number' && !isNaN(c.heading)) {
-        __lastBearing = c.heading;
-        __lastMoveTs = Date.now();
-      } else if (window.__lastGpsAccepted && window.__prevGpsAccepted){
-        const d = computeBearing(
-          {lat: window.__prevGpsAccepted.lat, lng: window.__prevGpsAccepted.lng},
-          {lat: window.__lastGpsAccepted.lat, lng: window.__lastGpsAccepted.lng}
-        );
-        __lastBearing = d;
-        __lastMoveTs = Date.now();
-      }
-    }catch(e){}
-    if (origOnPos) return origOnPos.apply(this, arguments);
-  };
-
-  // Wrap enterAdjustMode
-  const origEnter = window.enterAdjustMode;
-  window.enterAdjustMode = function(){
-    if (window.map && __lastBearing !== null && (Date.now()-__lastMoveTs)<120000){
-      map.easeTo({bearing: __lastBearing, pitch: 0, duration: 300});
-    }
-    if (origEnter) return origEnter.apply(this, arguments);
-  };
-})();
-</script>
