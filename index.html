@@ -8173,6 +8173,8 @@
 
             function handleGpsRefresh() {
                 const now = Date.now();
+                if (window.__uiModalOpen) return;
+                if (window.__gpsSuspendRecenterUntil && now < window.__gpsSuspendRecenterUntil) return;
                 if (now - lastGpsRefresh < 1000) return; // Debounce 1s
                 lastGpsRefresh = now;
 
@@ -13950,6 +13952,9 @@
         });
 
         async function openQrScanner() {
+            window.__uiModalOpen = true;
+            // Evita disparos de 'focus/visibility' mexendo no GPS enquanto a câmera abre
+            window.__gpsSuspendRecenterUntil = Date.now() + 2000;
             qrModal.classList.add('active');
             qrLoading.classList.add('active');
             qrStatusText.textContent = 'Iniciando câmera...';
@@ -14636,6 +14641,12 @@
 
         function closeQrScanner() {
             qrModal.classList.remove('active');
+            window.__uiModalOpen = false;
+            // Ao fechar a câmera, alguns Androids entregam fixes antigos/cachados -> entra em 'soft resume'
+            window.__gpsSuspendRecenterUntil = Date.now() + 2500;
+            if (typeof gpsEnterSoftResume === 'function') {
+                gpsEnterSoftResume('qr_modal_close');
+            }
 
             // Turn off torch before closing
             turnOffTorch();
@@ -15806,7 +15817,31 @@
 
                 let gpsWatchId = null;
         let gpsLastAccepted = null;   // {lng,lat,t,accuracy}
+        let gpsLastKnownGood = null;  // último fix bom persistente (não é zerado em pausas)
         let gpsSmoothed = null;       // {lng,lat}
+
+        // 'Soft resume': após eventos como fechar modal/câmera, exige estabilidade antes de aceitar grandes saltos.
+        window.__gpsSoftResumeUntil = window.__gpsSoftResumeUntil || 0;
+        function gpsEnterSoftResume(reason) {
+            // pequena janela onde aceitamos apenas movimentos "plausíveis" até estabilizar
+            window.__gpsSoftResumeUntil = Date.now() + 6000;
+            // também bloqueia recentralizações/refresh automáticos por um instante
+            window.__gpsSuspendRecenterUntil = Date.now() + 2500;
+            // limpa candidato pendente (evita confirmar teleporte antigo)
+            gpsCandidate = null;
+            gpsCandidateCount = 0;
+        }
+
+        // 'Soft resume': após eventos como fechar modal/câmera, exige estabilidade antes de aceitar saltos.
+        window.__gpsSoftResumeUntil = window.__gpsSoftResumeUntil || 0;
+        function gpsEnterSoftResume(reason) {
+            window.__gpsSoftResumeUntil = Date.now() + 6000;
+            // Limpa candidato para não 'confirmar' teleporte com leituras antigas
+            gpsCandidate = null;
+            gpsCandidateCount = 0;
+            // Mantém gpsLastAccepted/gpsLastKnownGood para ancorar o filtro
+            // console.log('🧭 GPS soft resume:', reason);
+        }
 
         // Perfil A (mais estável): janela + confirmação + deadband
         let gpsWindow = [];           // últimos fixes válidos (para mediana)
@@ -15957,8 +15992,30 @@
             // "Gating" por qualidade: não aceita leituras ruins
             // (permite iniciar um pouco mais solto, mas ainda com teto)
             if (!gpsLastAccepted) {
+                // Primeiro fix após (re)início: não pode aceitar "teleporte" por cache/stale fix.
                 if (acc && acc > 120) return false;
+
+                // Se já tivemos um fix bom antes (mesmo que o watch tenha sido pausado),
+                // exigimos que o primeiro fix novo seja plausível OU confirmado.
+                if (gpsLastKnownGood) {
+                    const distKnown = haversineMeters(gpsLastKnownGood.lat, gpsLastKnownGood.lng, lat, lng);
+
+                    // Em soft-resume (ex.: fechar modal/câmera), fica mais estrito
+                    const inSoftResume = (window.__gpsSoftResumeUntil && Date.now() < window.__gpsSoftResumeUntil);
+
+                    const maxFirstJump = inSoftResume ? 120 : 250; // metros
+                    const accGate = inSoftResume ? 30 : 45;
+
+                    if (distKnown > maxFirstJump || (acc && acc > accGate)) {
+                        // Trata como suspeito e exige 2 leituras consistentes antes de "assumir" a nova posição.
+                        gpsCandidate = { lng, lat, t: ts, accuracy: acc || null };
+                        gpsCandidateCount = 1;
+                        return false;
+                    }
+                }
+
                 gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
+                gpsLastKnownGood = { lng, lat, t: ts, accuracy: acc || null };
                 gpsWindow = [{ lng, lat, t: ts, accuracy: acc || null }];
                 gpsCandidate = null; gpsCandidateCount = 0;
                 return true;
@@ -16008,6 +16065,7 @@
             // OK: aceita e limpa candidato pendente
             gpsCandidate = null; gpsCandidateCount = 0;
             gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
+            gpsLastKnownGood = gpsLastAccepted;
             return true;
         }
 
@@ -16604,6 +16662,8 @@ function handleGpsPosition(pos) {
         let lastVisibilityHandled = 0;
         function handleVisibilityResume() {
             const now = Date.now();
+            if (window.__uiModalOpen) return;
+            if (window.__gpsSuspendRecenterUntil && now < window.__gpsSuspendRecenterUntil) return;
             // Debounce: ignore if handled within last 800ms
             if (now - lastVisibilityHandled < 800) return;
             lastVisibilityHandled = now;
