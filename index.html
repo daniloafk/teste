@@ -9469,7 +9469,9 @@
                                     previousMatchType: previousMatchType,
                                     previousMatchedClientAddress: previousMatchedClientAddress,
                                     previousCoordinates: previousCoordinates,
-                                    previousIsRegistered: previousIsRegistered
+                                    previousIsRegistered: previousIsRegistered,
+                                    // CORREÇÃO: Também salva em originalCoordinates para compatibilidade
+                                    originalCoordinates: props.originalCoordinates || previousCoordinates
                                 }
                             };
                         }
@@ -9501,6 +9503,13 @@
                                 const ids = matchingItems.map(i => i.id).join(',');
                                 const iconId = `pin-green-${Math.min(packageCount, 9)}`;
                                 iconsToGenerate.add(iconId);
+                                
+                                // IMPORTANTE: Salva coordenadas originais da planilha para permitir reversão
+                                // Busca o primeiro item com coordenadas válidas
+                                const itemWithCoords = matchingItems.find(i => i.latitude && i.longitude);
+                                const originalPlanilhaCoords = itemWithCoords 
+                                    ? JSON.stringify([itemWithCoords.longitude, itemWithCoords.latitude])
+                                    : null;
 
                                 const newFeature = {
                                     type: 'Feature',
@@ -9528,7 +9537,12 @@
                                         wasDeactivated: false,
                                         originalMatchType: null,
                                         originalMatchedClientAddress: '',
-                                        originalCoordinates: null,
+                                        // CORREÇÃO: Salva coordenadas originais da planilha para reversão
+                                        originalCoordinates: originalPlanilhaCoords,
+                                        // Também salva em previousCoordinates para compatibilidade
+                                        previousCoordinates: originalPlanilhaCoords,
+                                        previousIsRegistered: false,
+                                        previousMatchType: null,
                                         ids: ids,
                                         deliveryStatus: matchingItems[0].delivery_status || 'pending',
                                         bairro: clientData.bairro || matchingItems[0].bairro || '',
@@ -9787,44 +9801,101 @@
                 const features = currentData.features || [];
 
                 const normalizedDeletedAddr = normalizeAddressForComparison(deletedClient.address);
+                const deletedAddrComponents = extractAddressComponentsSimple(deletedClient.address);
+                
+                console.log('🔄 Tentando reverter marcador para:', deletedClient.address);
+                
                 let updated = false;
                 const iconsToGenerate = new Set();
 
                 // Buscar dados originais da planilha para ver se tinha coordenadas
                 let planilhaItem = null;
+                let allMatchingPlanilhaItems = [];
                 try {
                     const cachedPlanilha = await getAllFromOfflineDB('cachedPlanilha');
                     if (cachedPlanilha && cachedPlanilha.length > 0) {
-                        planilhaItem = cachedPlanilha.find(item => {
+                        // Busca todos os itens que podem corresponder ao endereço
+                        allMatchingPlanilhaItems = cachedPlanilha.filter(item => {
                             if (!item.destination_address) return false;
                             const normalizedItemAddr = normalizeAddressForComparison(item.destination_address);
-                            return normalizedItemAddr === normalizedDeletedAddr;
+                            
+                            // Match exato
+                            if (normalizedItemAddr === normalizedDeletedAddr) return true;
+                            
+                            // Match por componentes (rua + número)
+                            if (deletedAddrComponents.primary && deletedAddrComponents.number) {
+                                const itemComponents = extractAddressComponentsSimple(item.destination_address);
+                                if (itemComponents.primary === deletedAddrComponents.primary &&
+                                    itemComponents.number === deletedAddrComponents.number) {
+                                    return true;
+                                }
+                            }
+                            return false;
                         });
+                        
+                        // Pega o primeiro com coordenadas
+                        planilhaItem = allMatchingPlanilhaItems.find(item => 
+                            item.latitude && item.longitude
+                        ) || allMatchingPlanilhaItems[0];
                     }
-                } catch (e) {}
+                } catch (e) {
+                    console.error('Erro ao buscar planilha:', e);
+                }
 
                 // Verificar se a planilha original tinha coordenadas
                 const hadOriginalCoords = planilhaItem && planilhaItem.latitude && planilhaItem.longitude;
+                
+                console.log('📋 Dados da planilha encontrados:', {
+                    found: !!planilhaItem,
+                    hasCoords: hadOriginalCoords,
+                    coords: hadOriginalCoords ? [planilhaItem.longitude, planilhaItem.latitude] : null
+                });
 
                 const updatedFeatures = features.map(feature => {
                     const props = feature.properties;
                     const featureAddr = props.address || '';
                     const normalizedFeatureAddr = normalizeAddressForComparison(featureAddr);
 
+                    // MATCH 1: Comparação exata
                     let isMatch = normalizedFeatureAddr === normalizedDeletedAddr;
+                    
+                    // MATCH 2: Por componentes (rua + número)
+                    if (!isMatch && deletedAddrComponents.primary && deletedAddrComponents.number) {
+                        const featureComponents = extractAddressComponentsSimple(featureAddr);
+                        if (featureComponents.primary === deletedAddrComponents.primary &&
+                            featureComponents.number === deletedAddrComponents.number) {
+                            isMatch = true;
+                        }
+                    }
+                    
+                    // MATCH 3: Verifica em allAddresses
                     if (!isMatch && props.allAddresses) {
                         const allAddrs = props.allAddresses.split('|||');
-                        isMatch = allAddrs.some(addr =>
-                            normalizeAddressForComparison(addr) === normalizedDeletedAddr
-                        );
+                        isMatch = allAddrs.some(addr => {
+                            const normalizedAddr = normalizeAddressForComparison(addr);
+                            if (normalizedAddr === normalizedDeletedAddr) return true;
+                            
+                            if (deletedAddrComponents.primary && deletedAddrComponents.number) {
+                                const addrComponents = extractAddressComponentsSimple(addr);
+                                return addrComponents.primary === deletedAddrComponents.primary &&
+                                       addrComponents.number === deletedAddrComponents.number;
+                            }
+                            return false;
+                        });
+                    }
+                    
+                    // MATCH 4: Verifica matchedClientAddress (para marcadores roxos que foram cadastrados)
+                    if (!isMatch && props.matchedClientAddress) {
+                        const normalizedMatched = normalizeAddressForComparison(props.matchedClientAddress);
+                        isMatch = normalizedMatched === normalizedDeletedAddr;
                     }
 
                     // Verifica se o marcador tem status de entrega (entregue ou não entregue)
                     const hasDeliveryStatus = props.deliveryStatus === 'delivered' || props.deliveryStatus === 'not_delivered';
 
-                    // CORREÇÃO: Também processa marcadores com status de entrega
-                    // Se o cliente foi excluído e o marcador tinha status de entrega, precisa reverter
+                    // CORREÇÃO: Processa marcadores registrados OU com status de entrega
                     if (isMatch && (props.isRegistered || hasDeliveryStatus)) {
+                        console.log('✅ Marcador encontrado para reverter:', featureAddr, props);
                         updated = true;
                         const packageCount = props.packageCount || 1;
 
@@ -9890,6 +9961,13 @@
                         }
 
                         // Nenhum endereço cadastrado restante - volta ao estado original
+                        console.log('🔍 Verificando coordenadas para reversão:', {
+                            originalCoordinates: props.originalCoordinates,
+                            previousCoordinates: props.previousCoordinates,
+                            previousIsRegistered: props.previousIsRegistered,
+                            hadOriginalCoords: hadOriginalCoords,
+                            planilhaCoords: hadOriginalCoords ? [planilhaItem.longitude, planilhaItem.latitude] : null
+                        });
 
                         // PRIORIDADE 0: Usar originalCoordinates se disponível (coordenadas originais antes do cadastro)
                         if (props.originalCoordinates) {
@@ -9897,6 +9975,8 @@
                                 const originalCoords = JSON.parse(props.originalCoordinates);
                                 const newIconId = `pin-red-${packageCount}`;
                                 iconsToGenerate.add(newIconId);
+                                
+                                console.log('✅ Revertendo para originalCoordinates:', originalCoords);
 
                                 return {
                                     ...feature,
@@ -10103,10 +10183,14 @@
 
                     // Atualiza o fixed stats panel
                     updateFixedStatsPanel(stats);
+                    
+                    console.log('✅ Marcador revertido com sucesso. Features restantes:', updatedFeatures.length);
+                } else {
+                    console.log('⚠️ Nenhum marcador encontrado para reverter');
                 }
             } catch (err) {
                 // Erro ao reverter marcador - falha silenciosa
-                console.error('Erro ao reverter marcador de rota:', err);
+                console.error('❌ Erro ao reverter marcador de rota:', err);
             }
         }
 
