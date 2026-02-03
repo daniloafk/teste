@@ -8172,10 +8172,20 @@ function applyPerfilAFilter(coords) {
     const accuracy = Number.isFinite(coords.accuracy) ? coords.accuracy : 999;
 
     // 1) Gating por accuracy (mais rígido no RESUME)
-    const accMax = gpsIsResuming() ? 60 : 80;
-    if (accuracy > accMax) {
-        return null;
+// IMPORTANTE: para não "sumir" o marcador na primeira fix, aceitamos a primeira leitura mesmo
+// com accuracy ruim (até um teto), e deixamos o círculo de precisão mostrar essa incerteza.
+// Depois que existe lastGood, o Perfil A volta a ser rígido.
+const accMax = gpsIsResuming() ? 60 : 80;
+if (accuracy > accMax) {
+    // Primeira fix: mostra o ponto mesmo que esteja impreciso, mas limita o abuso.
+    if (!gpsLastGood && accuracy <= 250) {
+        gpsLastGood = { lng, lat, ts: now, accuracy };
+        gpsFiltered = { lng, lat };
+        gpsHistory = [{ lng, lat }];
+        return { lng, lat, accuracy };
     }
+    return null;
+}
 
     // 2) Primeira leitura aceita direto
     if (!gpsLastGood) {
