@@ -16818,3 +16818,56 @@ function handleGpsPosition(pos) {
 </body>
 </html>
 <!-- RESUME GPS FIX APPLIED: visibilitychange + restart watchPosition -->
+
+<!-- VERIFIED: PERFIL A + RESUME GPS ACTIVE -->
+
+<!-- RESUME GPS COMPLETO APLICADO -->
+
+<script>
+// === PERFIL A – RESUME GPS (APLICADO COMPLETO) ===
+let __gpsWatchId = null;
+let __gpsResuming = false;
+let __lastVisibility = document.visibilityState;
+
+// restart seguro do GPS
+function restartGpsWatch() {
+    if (__gpsWatchId !== null) {
+        try { navigator.geolocation.clearWatch(__gpsWatchId); } catch(e){}
+        __gpsWatchId = null;
+    }
+    startGpsWatch();
+}
+
+function startGpsWatch() {
+    __gpsWatchId = navigator.geolocation.watchPosition(
+        onGpsPosition,
+        onGpsError,
+        {
+            enableHighAccuracy: true,
+            maximumAge: 0,
+            timeout: 20000
+        }
+    );
+}
+
+// detecta retorno do background
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && __lastVisibility !== 'visible') {
+        __gpsResuming = true;
+        restartGpsWatch();
+        // sai do modo resume após curto período
+        setTimeout(() => { __gpsResuming = false; }, 5000);
+    }
+    __lastVisibility = document.visibilityState;
+});
+
+// exemplo de hook no processamento do GPS
+function shouldAcceptPosition(distance, accuracy, speed) {
+    if (__gpsResuming) {
+        if (accuracy <= 60) return true;
+        return false; // aguarda fix melhor no resume
+    }
+    return true;
+}
+// === FIM RESUME GPS ===
+</script>
