@@ -10012,9 +10012,10 @@
 
                     // Verifica se o marcador tem status de entrega (entregue ou não entregue)
                     const hasDeliveryStatus = props.deliveryStatus === 'delivered' || props.deliveryStatus === 'not_delivered';
+                    const hasRegisteredMatch = props.isRegistered || props.matchType === 'exact' || props.matchType === 'similarity';
 
                     // CORREÇÃO: Processa marcadores registrados OU com status de entrega
-                    if (isMatch && (props.isRegistered || hasDeliveryStatus)) {
+                    if (isMatch && (hasRegisteredMatch || hasDeliveryStatus)) {
                         console.log('✅ Marcador encontrado para reverter:', featureAddr, props);
                         updated = true;
                         const packageCount = props.packageCount || 1;
