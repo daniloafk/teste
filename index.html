@@ -16981,3 +16981,50 @@ function shouldAcceptPosition(distance, accuracy, speed) {
 }
 // === FIM RESUME GPS ===
 </script>
+
+<script>
+/* === PATCH: Pinagem usa última direção de deslocamento === */
+(function(){
+  let __lastBearing = null;
+  let __lastMoveTs = 0;
+
+  function computeBearing(a,b){
+    const toRad = d=>d*Math.PI/180, toDeg=r=>r*180/Math.PI;
+    const dLon = toRad(b.lng-a.lng);
+    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+    const y = Math.sin(dLon)*Math.cos(lat2);
+    const x = Math.cos(lat1)*Math.sin(lat2) -
+              Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLon);
+    return (toDeg(Math.atan2(y,x))+360)%360;
+  }
+
+  // Hook global GPS handler if exists
+  const origOnPos = window.onGpsPosition;
+  window.onGpsPosition = function(pos){
+    try{
+      const c = pos.coords;
+      if (typeof c.heading === 'number' && !isNaN(c.heading)) {
+        __lastBearing = c.heading;
+        __lastMoveTs = Date.now();
+      } else if (window.__lastGpsAccepted && window.__prevGpsAccepted){
+        const d = computeBearing(
+          {lat: window.__prevGpsAccepted.lat, lng: window.__prevGpsAccepted.lng},
+          {lat: window.__lastGpsAccepted.lat, lng: window.__lastGpsAccepted.lng}
+        );
+        __lastBearing = d;
+        __lastMoveTs = Date.now();
+      }
+    }catch(e){}
+    if (origOnPos) return origOnPos.apply(this, arguments);
+  };
+
+  // Wrap enterAdjustMode
+  const origEnter = window.enterAdjustMode;
+  window.enterAdjustMode = function(){
+    if (window.map && __lastBearing !== null && (Date.now()-__lastMoveTs)<120000){
+      map.easeTo({bearing: __lastBearing, pitch: 0, duration: 300});
+    }
+    if (origEnter) return origEnter.apply(this, arguments);
+  };
+})();
+</script>
