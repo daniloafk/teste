@@ -16,25 +16,6 @@
     <!-- Apple Touch Icon (SVG fallback) -->
     <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect fill='%230ea5e9' width='180' height='180' rx='40'/%3E%3Cpath fill='white' d='M90 30c-30 0-55 25-55 55c0 40 55 90 55 90s55-50 55-90c0-30-25-55-55-55zm0 75c-11 0-20-9-20-20s9-20 20-20s20 9 20 20s-9 20-20 20z'/%3E%3C/svg%3E">
 
-    <!-- CSS crítico inline para loader imediato -->
-    <style id="critical-css">
-        .app-loader{position:fixed;inset:0;background:linear-gradient(135deg,#0f172a 0%,#1e293b 50%,#0f172a 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99999;transition:opacity .5s,visibility .5s}
-        .app-loader.hidden{opacity:0;visibility:hidden;pointer-events:none}
-        .loader-content{text-align:center;animation:fadeInUp .6s ease}
-        .loader-icon{width:80px;height:80px;margin:0 auto 24px;position:relative}
-        .loader-ring{position:absolute;inset:0;border:4px solid rgba(14,165,233,.2);border-top-color:#0ea5e9;border-radius:50%;animation:spin 1s linear infinite}
-        .loader-ring:nth-child(2){inset:8px;border-top-color:#8b5cf6;animation-duration:.8s;animation-direction:reverse}
-        .loader-pin{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:24px;height:24px}
-        .loader-pin svg{width:100%;height:100%;color:#0ea5e9}
-        .loader-title{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:20px;font-weight:700;color:#f1f5f9;margin-bottom:8px;letter-spacing:-.02em}
-        .loader-status{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;color:#94a3b8;margin-bottom:20px}
-        .loader-progress{width:200px;height:4px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden;margin:0 auto}
-        .loader-bar{height:100%;background:linear-gradient(90deg,#0ea5e9,#8b5cf6);border-radius:2px;width:0;transition:width .3s ease}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes fadeInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-        @media(prefers-color-scheme:light){.app-loader{background:linear-gradient(135deg,#f8fafc 0%,#e2e8f0 50%,#f8fafc 100%)}.loader-title{color:#1e293b}.loader-status{color:#64748b}.loader-progress{background:rgba(0,0,0,.1)}}
-    </style>
-
     <!-- Mapbox CSS -->
     <link href="https://cdn.jsdelivr.net/npm/mapbox-gl@3.4.0/dist/mapbox-gl.min.css" rel="stylesheet">
 
@@ -4276,26 +4257,6 @@
     </style>
 </head>
 <body>
-    <!-- Loader de inicialização - aparece imediatamente -->
-    <div class="app-loader" id="appLoader">
-        <div class="loader-content">
-            <div class="loader-icon">
-                <div class="loader-ring"></div>
-                <div class="loader-ring"></div>
-                <div class="loader-pin">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-                    </svg>
-                </div>
-            </div>
-            <div class="loader-title">Mapa Interativo</div>
-            <div class="loader-status" id="loaderStatus">Inicializando...</div>
-            <div class="loader-progress">
-                <div class="loader-bar" id="loaderBar"></div>
-            </div>
-        </div>
-    </div>
-
     <div id="map">
         <!-- Center Pin for Adjust Mode - inside map container for accurate positioning -->
         <div class="center-pin" id="centerPin">
