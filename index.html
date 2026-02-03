@@ -7848,6 +7848,7 @@
             map.on('load', () => {
                 // Prepara layers do GPS (ponto azul filtrado)
                 ensureGpsLayers();
+                    startGpsWatch();
                 updateLoader('ready', 'Pronto!');
                 setTimeout(hideLoader, 300);
             });
@@ -8262,6 +8263,44 @@ function onFilteredGeolocate(coords) {
     setGpsData(filtered.lng, filtered.lat, filtered.accuracy);
 }
 
+        // ============================================
+        // GPS WATCH (Fonte única para o marcador WebGL)
+        // ============================================
+        let gpsWatchId = null;
+
+        function startGpsWatch() {
+            if (!navigator.geolocation) return;
+            if (gpsWatchId !== null) return;
+
+            // Inicia watchPosition (única fonte). GeolocateControl fica só como botão/centralizar.
+            gpsWatchId = navigator.geolocation.watchPosition(
+                (pos) => {
+                    // Se estivermos suspendendo por modal (ex.: QR), apenas ignore updates durante a janela
+                    if (Date.now() < suspendGpsUpdatesUntil) return;
+                    if (pos && pos.coords) onFilteredGeolocate(pos.coords);
+                },
+                (err) => {
+                    console.warn('⚠️ GPS watchPosition erro:', err && err.message ? err.message : err);
+                },
+                {
+                    enableHighAccuracy: true,
+                    maximumAge: 0,
+                    timeout: 20000
+                }
+            );
+        }
+
+        function stopGpsWatch() {
+            if (gpsWatchId === null) return;
+            try { navigator.geolocation.clearWatch(gpsWatchId); } catch(e) {}
+            gpsWatchId = null;
+        }
+
+        function restartGpsWatch() {
+            stopGpsWatch();
+            startGpsWatch();
+        }
+
                 this.accuracy = coords.accuracy;
                 this.heading = coords.heading;
                 this.speed = coords.speed;
@@ -8437,6 +8476,8 @@ function onFilteredGeolocate(coords) {
                     // Pequeno delay para garantir que a tela está ativa
                     setTimeout(() => {
                         if (GeolocateState.isTracking) {
+                            restartGpsWatch();
+
                             geolocateControl.trigger();
                         }
                     }, 300);
@@ -13811,6 +13852,8 @@ function onFilteredGeolocate(coords) {
 
         async function openQrScanner() {
             qrModal.classList.add('active');
+            suspendGpsUpdatesUntil = Date.now() + 1500; // evita conflito com inicialização da câmera
+
 
             // Suspende refresh de GPS enquanto o modal de QR estiver aberto (evita saltos ao focar/desfocar câmera)
             suspendGpsRefreshUntil = Date.now() + 10 * 60 * 1000; // 10 min (será liberado ao fechar)
@@ -14499,6 +14542,12 @@ function onFilteredGeolocate(coords) {
             torchSupported = false;
 
             qrVideo.srcObject = null;
+
+            // Evita 'pulos' ao sair da câmera: suspende updates e entra em RESUME rígido
+            suspendGpsUpdatesUntil = Date.now() + 2500;
+            markGpsResuming(5000);
+            restartGpsWatch();
+
         }
 
         function startScanning() {
