@@ -15023,7 +15023,7 @@
             // Fly to current GPS position
             map.flyTo({
                 center: [initialLng, initialLat],
-                zoom: 17,
+                zoom: Math.max(map.getZoom(), 18.5),
                 duration: 1500
             });
 
@@ -15105,7 +15105,7 @@
 
                 map.flyTo({
                     center: [initialLng, initialLat],
-                    zoom: 17,
+                    zoom: Math.max(map.getZoom(), 18.5),
                     duration: 1500
                 });
 
