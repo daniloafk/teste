@@ -15804,9 +15804,16 @@
             dot: 'gps-user-dot'
         };
 
-        let gpsWatchId = null;
+                let gpsWatchId = null;
         let gpsLastAccepted = null;   // {lng,lat,t,accuracy}
         let gpsSmoothed = null;       // {lng,lat}
+
+        // Perfil A (mais estável): janela + confirmação + deadband
+        let gpsWindow = [];           // últimos fixes válidos (para mediana)
+        const GPS_WINDOW_SIZE = 5;
+        let gpsCandidate = null;      // fix suspeito aguardando confirmação
+        let gpsCandidateCount = 0;
+        let gpsLastRender = null;     // {lng,lat,t}
         let navigationModeActive = false;
 
         function toRad(d) { return d * Math.PI / 180; }
@@ -15941,55 +15948,116 @@
             if (accSrc) accSrc.setData(makeCircleGeoJSON(lng, lat, acc, 64));
         }
 
+        
         function acceptGpsFix(lng, lat, accuracy, t) {
-            // Regras anti-outlier (teleporte)
+            // Perfil A: muito estável
             const acc = Number(accuracy);
-            const ts = Number(t);
+            const ts = Number(t) || Date.now();
 
-            // Se não tem fix anterior, aceita (mesmo com accuracy maior, dentro de um teto)
+            // "Gating" por qualidade: não aceita leituras ruins
+            // (permite iniciar um pouco mais solto, mas ainda com teto)
             if (!gpsLastAccepted) {
-                if (acc && acc > 150) return false; // evita iniciar com fix absurdamente ruim
+                if (acc && acc > 120) return false;
                 gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
+                gpsWindow = [{ lng, lat, t: ts, accuracy: acc || null }];
+                gpsCandidate = null; gpsCandidateCount = 0;
                 return true;
             }
+
+            // Se accuracy muito ruim, ignora totalmente (reduz jitter quando GPS degrada)
+            if (acc && acc > 60) return false;
 
             const dt = Math.max(0.001, (ts - gpsLastAccepted.t) / 1000);
             const dist = haversineMeters(gpsLastAccepted.lat, gpsLastAccepted.lng, lat, lng);
             const speed = dist / dt; // m/s
 
-            // Se accuracy está muito ruim, ignora (reduz saltos quando GPS degrada)
-            if (acc && acc > 80) return false;
+            // Hard outliers (teleporte / velocidade impossível)
+            if (dt < 5 && dist > 50) return false;
+            if (speed > 30 && dist > 25) return false; // ~108 km/h
 
-            // Teleporte: distância grande em pouco tempo
-            if (dt < 4 && dist > 80) return false;
+            // Se o salto é grande em relação à precisão, exige confirmação (2 leituras consistentes)
+            const suspicious = (dist > Math.max(35, (acc ? acc * 4 : 60)));
+            if (suspicious) {
+                if (!gpsCandidate) {
+                    gpsCandidate = { lng, lat, t: ts, accuracy: acc || null };
+                    gpsCandidateCount = 1;
+                    return false;
+                }
+                // Confirma se a leitura atual é consistente com o candidato anterior
+                const candDist = haversineMeters(gpsCandidate.lat, gpsCandidate.lng, lat, lng);
+                const candDt = Math.max(0.001, (ts - gpsCandidate.t) / 1000);
 
-            // Velocidade impossível (pulos): > 40 m/s (~144 km/h)
-            if (speed > 40 && dist > 30) return false;
+                if (candDt <= 8 && candDist <= Math.max(18, (acc ? acc * 2 : 25))) {
+                    gpsCandidateCount += 1;
+                } else {
+                    gpsCandidate = { lng, lat, t: ts, accuracy: acc || null };
+                    gpsCandidateCount = 1;
+                    return false;
+                }
 
-            // Salto muito maior que a precisão reportada
-            if (acc && dist > Math.max(60, acc * 6)) return false;
+                if (gpsCandidateCount >= 2) {
+                    // Aceita o ponto confirmado
+                    gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
+                    gpsCandidate = null; gpsCandidateCount = 0;
+                    return true;
+                }
 
+                return false;
+            }
+
+            // OK: aceita e limpa candidato pendente
+            gpsCandidate = null; gpsCandidateCount = 0;
             gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
             return true;
         }
 
-        function smoothFix(lng, lat, accuracy) {
-            // Suavização adaptativa: quanto pior a precisão, mais "lento" suaviza
+        function medianOf(arr) {
+            const sorted = arr.slice().sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+        }
+
+        function smoothFix(lng, lat, accuracy, ts) {
+            // Janela (mediana) para matar spikes isolados
             const acc = Number(accuracy);
-            let alpha = 0.55; // responsivo
-            if (acc && acc > 25) alpha = 0.28;
-            if (acc && acc > 40) alpha = 0.18;
+
+            gpsWindow.push({ lng, lat, t: ts || Date.now(), accuracy: acc || null });
+            if (gpsWindow.length > GPS_WINDOW_SIZE) gpsWindow.shift();
+
+            const medLng = medianOf(gpsWindow.map(p => p.lng));
+            const medLat = medianOf(gpsWindow.map(p => p.lat));
+
+            // Suavização ponderada por accuracy (Perfil A = mais "preso")
+            let alpha = 0.22;
+            if (acc && acc <= 20) alpha = 0.28;
+            if (acc && acc > 20) alpha = 0.18;
+            if (acc && acc > 35) alpha = 0.10;
 
             if (!gpsSmoothed) {
-                gpsSmoothed = { lng, lat };
-            } else {
-                gpsSmoothed.lng = gpsSmoothed.lng + alpha * (lng - gpsSmoothed.lng);
-                gpsSmoothed.lat = gpsSmoothed.lat + alpha * (lat - gpsSmoothed.lat);
+                gpsSmoothed = { lng: medLng, lat: medLat };
+                gpsLastRender = { lng: medLng, lat: medLat, t: ts || Date.now() };
+                return gpsSmoothed;
             }
+
+            // Deadband (parado): não atualiza por micro-jitter
+            const jitterDist = haversineMeters(gpsSmoothed.lat, gpsSmoothed.lng, medLat, medLng);
+            const deadband = Math.max(3, (acc ? acc * 0.12 : 6)); // metros
+            const now = ts || Date.now();
+            const sinceRender = gpsLastRender ? (now - gpsLastRender.t) : 999999;
+
+            if (jitterDist < deadband && sinceRender < 6000) {
+                // Mantém fixo (mas permite atualizar o círculo de precisão fora daqui)
+                return gpsSmoothed;
+            }
+
+            gpsSmoothed.lng = gpsSmoothed.lng + alpha * (medLng - gpsSmoothed.lng);
+            gpsSmoothed.lat = gpsSmoothed.lat + alpha * (medLat - gpsSmoothed.lat);
+
+            gpsLastRender = { lng: gpsSmoothed.lng, lat: gpsSmoothed.lat, t: now };
             return gpsSmoothed;
         }
 
-        function handleGpsPosition(pos) {
+function handleGpsPosition(pos) {
             if (!pos || !pos.coords) return;
 
             const lng = pos.coords.longitude;
@@ -15999,7 +16067,7 @@
 
             if (!acceptGpsFix(lng, lat, accuracy, ts)) return;
 
-            const sm = smoothFix(lng, lat, accuracy);
+            const sm = smoothFix(lng, lat, accuracy, ts);
             updateGpsLayers(sm.lng, sm.lat, accuracy || 0);
 
             // Atualiza estado (se o resto do app usa isso)
@@ -16052,6 +16120,10 @@
             }
             gpsLastAccepted = null;
             gpsSmoothed = null;
+            gpsWindow = [];
+            gpsCandidate = null;
+            gpsCandidateCount = 0;
+            gpsLastRender = null;
         }
 
         // Compatibilidade: estas funções existiam no código antigo (DOM marker).
