@@ -1,7 +1,7 @@
-// Service Worker - Mapa de Entregas v5
-const CACHE_NAME = 'mapa-entregas-v5';
-const TILE_CACHE_NAME = 'mapbox-tiles-v1';
-const HTML_CACHE_NAME = 'mapa-html-v3';
+// Service Worker - Mapa de Entregas v6 (Otimizado)
+const CACHE_NAME = 'mapa-entregas-v6';
+const TILE_CACHE_NAME = 'mapbox-tiles-v2';
+const HTML_CACHE_NAME = 'mapa-html-v4';
 
 // Ícones inline para notificações push (evita arquivos externos)
 const NOTIFICATION_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTIiIGhlaWdodD0iMTkyIiB2aWV3Qm94PSIwIDAgMTkyIDE5MiI+PGNpcmNsZSBjeD0iOTYiIGN5PSI5NiIgcj0iOTYiIGZpbGw9IiMzYjgyZjYiLz48cGF0aCBkPSJNOTYgMzJjLTI2LjUgMC00OCAyMS41LTQ4IDQ4djE2YzAgMTcuNy0xNC4zIDMyLTMyIDMydjE2aDY0YzAgMTcuNyAxNC4zIDMyIDMyIDMyczMyLTE0LjMgMzItMzJoNjR2LTE2Yy0xNy43IDAtMzItMTQuMy0zMi0zMlY4MGMwLTI2LjUtMjEuNS00OC00OC00OHoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=';
@@ -29,18 +29,35 @@ self.addEventListener('install', event => {
             const cache = await caches.open(CACHE_NAME);
             console.log('📦 Cacheando assets CDN...');
 
-            // Cacheia CDN assets (pode falhar individualmente sem quebrar tudo)
-            for (const url of CDN_ASSETS) {
+            // MELHORIA: Cache paralelo com timeout individual para evitar bloqueio
+            const cachePromises = CDN_ASSETS.map(async url => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+                
                 try {
-                    const response = await fetch(url, { mode: 'cors' });
+                    const response = await fetch(url, { 
+                        mode: 'cors',
+                        signal: controller.signal 
+                    });
+                    clearTimeout(timeoutId);
+                    
                     if (response.ok) {
                         await cache.put(url, response);
                         console.log('📦 Cacheado:', url.split('/').pop());
+                        return { url, success: true };
                     }
+                    return { url, success: false };
                 } catch (err) {
-                    console.warn('⚠️ Falha ao cachear:', url, err.message);
+                    clearTimeout(timeoutId);
+                    console.warn('⚠️ Falha ao cachear:', url.split('/').pop());
+                    return { url, success: false };
                 }
-            }
+            });
+            
+            // Aguarda todas as promises (sucesso ou falha)
+            const results = await Promise.allSettled(cachePromises);
+            const successful = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+            console.log(`📦 CDN Cache: ${successful}/${CDN_ASSETS.length} assets cacheados`);
 
             // Cache HTML principal - CRÍTICO para offline
             const htmlCache = await caches.open(HTML_CACHE_NAME);
