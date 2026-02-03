@@ -8170,26 +8170,31 @@
             // VISIBILITY API - Refresh ao retomar
             // ============================================
             let lastGpsRefresh = 0;
+            // Estado para evitar bugs de resume/recenter durante modais (ex: câmera/QR)
+            const UiGpsState = {
+                qrModalOpen: false,
+                suspendGpsRefreshUntil: 0,
+                suspendVisibilityResumeUntil: 0,
+                lastModalCloseAt: 0
+            };
+
 
             function handleGpsRefresh() {
                 const now = Date.now();
-                if (window.__uiModalOpen) return;
-                if (window.__gpsSuspendRecenterUntil && now < window.__gpsSuspendRecenterUntil) return;
                 if (now - lastGpsRefresh < 1000) return; // Debounce 1s
                 lastGpsRefresh = now;
 
-                if (!geolocateControl) return;
+                // Evita "teleporte" ao voltar de modais (câmera/QR) e durante transições
+                if (typeof UiGpsState !== 'undefined') {
+                    if (UiGpsState.qrModalOpen) return;
+                    if (now < (UiGpsState.suspendGpsRefreshUntil || 0)) return;
+                }
 
-                // Só dispara refresh se estava em modo tracking
-                if (GeolocateState.isTracking) {
-                    console.log('🔄 Atualizando GPS após retorno...');
-
-                    // Pequeno delay para garantir que a tela está ativa
-                    setTimeout(() => {
-                        if (GeolocateState.isTracking) {
-                            geolocateControl.trigger();
-                        }
-                    }, 300);
+                // Só faz refresh se estava em modo tracking
+                if (GeolocateState && GeolocateState.isTracking) {
+                    console.log('🔄 Atualizando GPS (refresh seguro)...');
+                    // Pede 1 posição e deixa o filtro Perfil A decidir se aceita.
+                    requestOneShotGpsUpdate('refresh', { recenter: true });
                 }
             }
 
@@ -13952,9 +13957,13 @@
         });
 
         async function openQrScanner() {
-            window.__uiModalOpen = true;
-            // Evita disparos de 'focus/visibility' mexendo no GPS enquanto a câmera abre
-            window.__gpsSuspendRecenterUntil = Date.now() + 2000;
+            if (typeof UiGpsState !== 'undefined') {
+                UiGpsState.qrModalOpen = true;
+                const now = Date.now();
+                // Suspende triggers de resume/recenter enquanto a câmera está abrindo
+                UiGpsState.suspendVisibilityResumeUntil = now + 2500;
+                UiGpsState.suspendGpsRefreshUntil = now + 2500;
+            }
             qrModal.classList.add('active');
             qrLoading.classList.add('active');
             qrStatusText.textContent = 'Iniciando câmera...';
@@ -14641,12 +14650,6 @@
 
         function closeQrScanner() {
             qrModal.classList.remove('active');
-            window.__uiModalOpen = false;
-            // Ao fechar a câmera, alguns Androids entregam fixes antigos/cachados -> entra em 'soft resume'
-            window.__gpsSuspendRecenterUntil = Date.now() + 2500;
-            if (typeof gpsEnterSoftResume === 'function') {
-                gpsEnterSoftResume('qr_modal_close');
-            }
 
             // Turn off torch before closing
             turnOffTorch();
@@ -14668,6 +14671,35 @@
             torchSupported = false;
 
             qrVideo.srcObject = null;
+
+            // GPS: ao fechar o modal, RECENTER/REFRESH automático mas sem saltos (usa Perfil A)
+            if (typeof UiGpsState !== 'undefined') {
+                const now = Date.now();
+                UiGpsState.qrModalOpen = false;
+                UiGpsState.lastModalCloseAt = now;
+                // Bloqueia eventos de focus/visibility duplicados por ~1.2s
+                UiGpsState.suspendVisibilityResumeUntil = now + 1200;
+                UiGpsState.suspendGpsRefreshUntil = now + 600;
+            }
+
+            // Se o app estava em tracking, recentraliza no último ponto bom imediatamente e refina depois
+            if (typeof GeolocateState !== 'undefined' && GeolocateState.isTracking) {
+                try {
+                    const best = getBestGpsCenter();
+                    if (best && map && mapFullyInitialized && !isAdjustMode && !currentNavigation) {
+                        map.easeTo({
+                            center: [best.lng, best.lat],
+                            zoom: Math.max(map.getZoom(), 15),
+                            duration: 700
+                        });
+                    }
+                } catch (e) {}
+
+                // Um update 1-shot após a câmera fechar (passa pelo filtro Perfil A)
+                setTimeout(() => {
+                    requestOneShotGpsUpdate('qr-close', { recenter: true, zoomMin: 15 });
+                }, 650);
+            }
         }
 
         function startScanning() {
@@ -15817,31 +15849,7 @@
 
                 let gpsWatchId = null;
         let gpsLastAccepted = null;   // {lng,lat,t,accuracy}
-        let gpsLastKnownGood = null;  // último fix bom persistente (não é zerado em pausas)
         let gpsSmoothed = null;       // {lng,lat}
-
-        // 'Soft resume': após eventos como fechar modal/câmera, exige estabilidade antes de aceitar grandes saltos.
-        window.__gpsSoftResumeUntil = window.__gpsSoftResumeUntil || 0;
-        function gpsEnterSoftResume(reason) {
-            // pequena janela onde aceitamos apenas movimentos "plausíveis" até estabilizar
-            window.__gpsSoftResumeUntil = Date.now() + 6000;
-            // também bloqueia recentralizações/refresh automáticos por um instante
-            window.__gpsSuspendRecenterUntil = Date.now() + 2500;
-            // limpa candidato pendente (evita confirmar teleporte antigo)
-            gpsCandidate = null;
-            gpsCandidateCount = 0;
-        }
-
-        // 'Soft resume': após eventos como fechar modal/câmera, exige estabilidade antes de aceitar saltos.
-        window.__gpsSoftResumeUntil = window.__gpsSoftResumeUntil || 0;
-        function gpsEnterSoftResume(reason) {
-            window.__gpsSoftResumeUntil = Date.now() + 6000;
-            // Limpa candidato para não 'confirmar' teleporte com leituras antigas
-            gpsCandidate = null;
-            gpsCandidateCount = 0;
-            // Mantém gpsLastAccepted/gpsLastKnownGood para ancorar o filtro
-            // console.log('🧭 GPS soft resume:', reason);
-        }
 
         // Perfil A (mais estável): janela + confirmação + deadband
         let gpsWindow = [];           // últimos fixes válidos (para mediana)
@@ -15992,30 +16000,8 @@
             // "Gating" por qualidade: não aceita leituras ruins
             // (permite iniciar um pouco mais solto, mas ainda com teto)
             if (!gpsLastAccepted) {
-                // Primeiro fix após (re)início: não pode aceitar "teleporte" por cache/stale fix.
                 if (acc && acc > 120) return false;
-
-                // Se já tivemos um fix bom antes (mesmo que o watch tenha sido pausado),
-                // exigimos que o primeiro fix novo seja plausível OU confirmado.
-                if (gpsLastKnownGood) {
-                    const distKnown = haversineMeters(gpsLastKnownGood.lat, gpsLastKnownGood.lng, lat, lng);
-
-                    // Em soft-resume (ex.: fechar modal/câmera), fica mais estrito
-                    const inSoftResume = (window.__gpsSoftResumeUntil && Date.now() < window.__gpsSoftResumeUntil);
-
-                    const maxFirstJump = inSoftResume ? 120 : 250; // metros
-                    const accGate = inSoftResume ? 30 : 45;
-
-                    if (distKnown > maxFirstJump || (acc && acc > accGate)) {
-                        // Trata como suspeito e exige 2 leituras consistentes antes de "assumir" a nova posição.
-                        gpsCandidate = { lng, lat, t: ts, accuracy: acc || null };
-                        gpsCandidateCount = 1;
-                        return false;
-                    }
-                }
-
                 gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
-                gpsLastKnownGood = { lng, lat, t: ts, accuracy: acc || null };
                 gpsWindow = [{ lng, lat, t: ts, accuracy: acc || null }];
                 gpsCandidate = null; gpsCandidateCount = 0;
                 return true;
@@ -16065,7 +16051,6 @@
             // OK: aceita e limpa candidato pendente
             gpsCandidate = null; gpsCandidateCount = 0;
             gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
-            gpsLastKnownGood = gpsLastAccepted;
             return true;
         }
 
@@ -16183,6 +16168,55 @@ function handleGpsPosition(pos) {
             gpsCandidateCount = 0;
             gpsLastRender = null;
         }
+        // ==============================
+        // GPS helpers: 1-shot update + best center
+        // ==============================
+        function getBestGpsCenter() {
+            if (typeof gpsSmoothed !== 'undefined' && gpsSmoothed && isFinite(gpsSmoothed.lng) && isFinite(gpsSmoothed.lat)) {
+                return { lng: gpsSmoothed.lng, lat: gpsSmoothed.lat };
+            }
+            if (typeof gpsLastAccepted !== 'undefined' && gpsLastAccepted && isFinite(gpsLastAccepted.lng) && isFinite(gpsLastAccepted.lat)) {
+                return { lng: gpsLastAccepted.lng, lat: gpsLastAccepted.lat };
+            }
+            return null;
+        }
+
+        function requestOneShotGpsUpdate(reason = 'oneshot', opts = {}) {
+            const { recenter = false, zoomMin = 14 } = opts || {};
+            if (!navigator.geolocation) return;
+
+            // Não dispara while camera modal open (evita bug em alguns browsers)
+            const now = Date.now();
+            if (typeof UiGpsState !== 'undefined') {
+                if (UiGpsState.qrModalOpen) return;
+                if (now < (UiGpsState.suspendGpsRefreshUntil || 0)) return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    // Passa pelo MESMO pipeline (Perfil A) para evitar saltos
+                    try { handleGpsPosition(position); } catch (e) {}
+
+                    if (recenter && map && mapFullyInitialized && !isAdjustMode && !currentNavigation) {
+                        const best = getBestGpsCenter();
+                        if (best) {
+                            map.easeTo({
+                                center: [best.lng, best.lat],
+                                zoom: Math.max(map.getZoom(), zoomMin),
+                                duration: 900
+                            });
+                        }
+                    }
+                },
+                () => {},
+                {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 0
+                }
+            );
+        }
+
 
         // Compatibilidade: estas funções existiam no código antigo (DOM marker).
         // Agora não são mais necessárias, pois o "ponto azul" é layer nativo.
@@ -16606,30 +16640,34 @@ function handleGpsPosition(pos) {
             // Skip if map not ready, still initializing, in adjust mode, or navigation is active
             if (!map || !mapFullyInitialized || isAdjustMode || currentNavigation) return;
 
+            // Evita interferência de modais (câmera/QR) e transições
+            const now = Date.now();
+            if (typeof UiGpsState !== 'undefined') {
+                if (UiGpsState.qrModalOpen) return;
+                if (now < (UiGpsState.suspendVisibilityResumeUntil || 0)) return;
+            }
+
             // Remove view marker if any
             if (typeof removeViewMarker === 'function') {
                 removeViewMarker();
             }
 
-            // Get current GPS position and center map
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const { latitude, longitude } = position.coords;
-                    map.flyTo({
-                        center: [longitude, latitude],
-                        zoom: Math.max(map.getZoom(), 14),
-                        duration: 1500
-                    });
-                },
-                () => {
-                    // Silently fail if GPS not available
-                },
-                {
-                    enableHighAccuracy: true,
-                    timeout: 10000,
-                    maximumAge: 0
-                }
-            );
+            // Preferência: usar a posição filtrada (Perfil A) ao invés de getCurrentPosition cru
+            const best = getBestGpsCenter();
+            if (best) {
+                map.easeTo({
+                    center: [best.lng, best.lat],
+                    zoom: Math.max(map.getZoom(), 14),
+                    duration: 900
+                });
+
+                // Faz 1 update "refinado" após centralizar, mas passando pelo filtro
+                setTimeout(() => requestOneShotGpsUpdate('recenter-refine', { recenter: false }), 650);
+                return;
+            }
+
+            // Sem histórico ainda: tenta 1-shot (vai passar pelo filtro)
+            requestOneShotGpsUpdate('recenter-init', { recenter: true });
         }
 
         // Função para forçar re-renderização do centerPin e sincronizar o mapa
@@ -16662,8 +16700,11 @@ function handleGpsPosition(pos) {
         let lastVisibilityHandled = 0;
         function handleVisibilityResume() {
             const now = Date.now();
-            if (window.__uiModalOpen) return;
-            if (window.__gpsSuspendRecenterUntil && now < window.__gpsSuspendRecenterUntil) return;
+            // Evita executar resume/recenter quando a câmera/QR abre/fecha (gera eventos de focus/visibility)
+            if (typeof UiGpsState !== 'undefined') {
+                if (UiGpsState.qrModalOpen) return;
+                if (now < (UiGpsState.suspendVisibilityResumeUntil || 0)) return;
+            }
             // Debounce: ignore if handled within last 800ms
             if (now - lastVisibilityHandled < 800) return;
             lastVisibilityHandled = now;
