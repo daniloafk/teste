@@ -15043,6 +15043,15 @@
             closeQrScanner();
             isAdjustMode = true;
 
+
+            // Ajuste: ao entrar no modo de pinagem, força o mapa a ficar "norte para cima"
+            // (bearing 0 = topo da tela apontando para o norte)
+            try {
+                if (map && typeof map.getBearing === 'function') {
+                    // Mantém o centro/zoom atuais; só corrige rotação e inclinação
+                    map.easeTo({ bearing: 0, pitch: 0, duration: 350 });
+                }
+            } catch (e) {}
             // Get current GPS position (not the address location)
             let initialLng, initialLat;
 
