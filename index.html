@@ -6206,6 +6206,118 @@ async function mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers) {
             }
         } catch (e) {}
 
+
+        // Mapa de coordenadas originais da planilha (para reverter marcadores durante deletes pendentes)
+        const planilhaCoordsMap = new Map();
+        try {
+            const cachedPlanilha = await getAllFromOfflineDB('cachedPlanilha');
+            if (cachedPlanilha && cachedPlanilha.length > 0) {
+                cachedPlanilha.forEach(item => {
+                    const addr = item.destination_address;
+                    if (!addr) return;
+                    const lat = parseFloat(item.latitude);
+                    const lng = parseFloat(item.longitude);
+                    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+                    const norm = normalizeAddressForComparison(addr);
+                    if (!planilhaCoordsMap.has(norm)) {
+                        planilhaCoordsMap.set(norm, [lng, lat]);
+                    }
+                });
+            }
+        } catch (e) {}
+
+        // Força uma feature para o estado "vermelho/original" se ela estiver ligada a um endereço em pendingDeletes
+        function forceRevertRouteFeatureForPendingDelete(feature) {
+            try {
+                if (!feature || !feature.properties) return feature;
+
+                const props = feature.properties;
+
+                // Coleta endereços associados a esta parada
+                const addrList = [];
+                if (props.allAddresses) {
+                    const parts = (typeof props.allAddresses === 'string') ? props.allAddresses.split('|||') : props.allAddresses;
+                    parts.forEach(a => a && addrList.push(a));
+                }
+                if (props.address) addrList.push(props.address);
+                if (props.matchedClientAddress) addrList.push(props.matchedClientAddress);
+
+                // Se nenhum endereço bate com um delete pendente, retorna como está
+                const hasPendingDeleteAddress = addrList.some(a => pendingDeleteAddressesSet.has(normalizeAddressForComparison(a)));
+                if (!hasPendingDeleteAddress) return feature;
+
+                const packageCount = props.packageCount || 1;
+
+                // Determina coordenadas originais (prioridade: originalCoordinates -> planilhaCoordsMap -> previousCoordinates quando era vermelho)
+                let targetCoords = null;
+
+                if (props.originalCoordinates) {
+                    try { targetCoords = JSON.parse(props.originalCoordinates); } catch (e) {}
+                }
+
+                if (!targetCoords) {
+                    for (const a of addrList) {
+                        const norm = normalizeAddressForComparison(a);
+                        if (planilhaCoordsMap.has(norm)) {
+                            targetCoords = planilhaCoordsMap.get(norm);
+                            break;
+                        }
+                    }
+                }
+
+                if (!targetCoords && props.previousCoordinates && !props.previousIsRegistered) {
+                    try { targetCoords = JSON.parse(props.previousCoordinates); } catch (e) {}
+                }
+
+                // Atualiza addressSequencePairs para liberar o(s) endereço(s) (matchType -> null)
+                let updatedAddressSequencePairs = props.addressSequencePairs;
+                if (props.addressSequencePairs) {
+                    try {
+                        let pairs = typeof props.addressSequencePairs === 'string'
+                            ? JSON.parse(props.addressSequencePairs)
+                            : props.addressSequencePairs;
+
+                        pairs = pairs.map(pair => {
+                            const pNorm = normalizeAddressForComparison(pair.address || '');
+                            // Libera todos os endereços que estão pendentes de delete
+                            if (pendingDeleteAddressesSet.has(pNorm)) {
+                                return { ...pair, matchType: null };
+                            }
+                            return pair;
+                        });
+
+                        updatedAddressSequencePairs = JSON.stringify(pairs);
+                    } catch (e) {}
+                }
+
+                const newIconId = `pin-red-${packageCount}`;
+                // Não adiciona em iconsToGenerate aqui; isso é só para evitar piscada e manter estado coerente
+
+                const out = {
+                    ...feature,
+                    properties: {
+                        ...props,
+                        isRegistered: false,
+                        matchType: null,
+                        matchedClientAddress: null,
+                        icon: newIconId,
+                        addressSequencePairs: updatedAddressSequencePairs,
+                        deliveryStatus: 'pending'
+                    }
+                };
+
+                if (targetCoords && Array.isArray(targetCoords) && targetCoords.length === 2) {
+                    out.geometry = { type: 'Point', coordinates: targetCoords };
+                    out.properties.latitude = targetCoords[1];
+                    out.properties.longitude = targetCoords[0];
+                }
+
+                return out;
+            } catch (e) {
+                return feature;
+            }
+        }
+
         // Mescla em lotes para não travar
         const mergedFeatures = [];
         const BATCH = 250;
@@ -6221,6 +6333,13 @@ async function mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers) {
                 shouldFilterOut = addrList.some(addr => pendingDeleteAddressesSet.has(normalizeAddressForComparison(addr)));
             }
             if (shouldFilterOut) {
+                // Se houver feature local, preferimos ela (já contém reversões feitas offline)
+                if (localFeature) {
+                    mergedFeatures.push(forceRevertRouteFeatureForPendingDelete(localFeature));
+                } else {
+                    // Sem feature local, força a remota para vermelho/original para evitar "piscada"
+                    mergedFeatures.push(forceRevertRouteFeatureForPendingDelete(remoteFeature));
+                }
                 if ((i + 1) % BATCH === 0) await yieldToMain();
                 continue;
             }
@@ -6367,12 +6486,19 @@ try {
                 syncResult.syncedDeletedIds = deleteResult.deletedIds || [];
                 syncResult.syncedDeletedAddresses = deleteResult.deletedAddresses || [];
                 await longYield();
+                // Garante que endereços excluídos voltem para o modal de cadastro (mesmo se o mapa ainda não estiver pronto)
+                if (syncResult.syncedDeletedAddresses.length > 0) {
+                    for (const addr of syncResult.syncedDeletedAddresses) {
+                        try { await restoreAddressToManualList(addr); } catch (e) {}
+                    }
+                }
 
                 // Reverte os marcadores de rota para os clientes excluídos
                 if (syncResult.syncedDeletedAddresses.length > 0 && map && map.getSource('route-stops')) {
                     for (const address of syncResult.syncedDeletedAddresses) {
                         try {
                             await revertRouteMarkerAfterClientDeletion({ address });
+                            try { await restoreAddressToManualList(address); } catch (e) {}
                         } catch (revertErr) {
                             console.error('Erro ao reverter marcador após sync de exclusão:', revertErr);
                         }
@@ -9479,6 +9605,13 @@ try {
                 // 7. Atualizar marcadores de rota se visíveis (mudar cor de vermelho para verde/roxo)
                 if (map && map.getSource && map.getSource('route-stops')) {
                     await updateRouteMarkerForNewClient(clientData);
+                }
+
+                // 7. Restaurar endereço na lista manual de cadastro (quando aplicável)
+                if (removedClient && removedClient.address) {
+                    try {
+                        await restoreAddressToManualList(removedClient.address);
+                    } catch (e) {}
                 }
 
             } catch (err) {
@@ -16190,6 +16323,71 @@ try {
                     if (qrAddressList) {
                         qrAddressList.innerHTML = '<div class="qr-address-list-empty">Todos os endereços já foram cadastrados! 🎉</div>';
                     }
+
+        // Função para restaurar um endereço na lista manual de cadastro (ex.: após exclusão offline)
+        async function restoreAddressToManualList(address) {
+            try {
+                if (!address) return;
+
+                // Se a lista manual ainda não foi carregada, não faz nada
+                if (!planilhaAddressData || !Array.isArray(planilhaAddressData)) return;
+
+                const normalizedAddress = normalizeAddressForComparison(address);
+
+                // Evita duplicar na lista
+                const alreadyExists = planilhaAddressData.some(item => {
+                    const normalizedItemAddr = normalizeAddressForComparison(item.destination_address || '');
+                    return normalizedItemAddr === normalizedAddress;
+                });
+                if (alreadyExists) return;
+
+                // Procura o item original na planilha cacheada
+                let cachedPlanilha = null;
+                try {
+                    cachedPlanilha = await getAllFromOfflineDB('cachedPlanilha');
+                } catch (e) {}
+
+                if (!cachedPlanilha || cachedPlanilha.length === 0) return;
+
+                const addrComponents = extractAddressComponentsSimple(address);
+
+                // Encontra um item que corresponda ao endereço (match exato ou por componentes)
+                const found = cachedPlanilha.find(item => {
+                    const itemAddr = item.destination_address || '';
+                    if (!itemAddr) return false;
+
+                    const normalizedItemAddr = normalizeAddressForComparison(itemAddr);
+                    if (normalizedItemAddr === normalizedAddress) return true;
+
+                    if (addrComponents.primary && addrComponents.number) {
+                        const itemComponents = extractAddressComponentsSimple(itemAddr);
+                        return itemComponents.primary === addrComponents.primary &&
+                               itemComponents.number === addrComponents.number;
+                    }
+                    return false;
+                });
+
+                if (!found) return;
+
+                // Insere de volta na lista manual
+                planilhaAddressData.push(found);
+
+                // Mantém ordenação por sequence/stop quando possível
+                planilhaAddressData.sort((a, b) => {
+                    const aSeq = parseInt(a.sequence ?? a.stop ?? a.order ?? a.seq ?? 0);
+                    const bSeq = parseInt(b.sequence ?? b.stop ?? b.order ?? b.seq ?? 0);
+                    if (isNaN(aSeq) && isNaN(bSeq)) return 0;
+                    if (isNaN(aSeq)) return 1;
+                    if (isNaN(bSeq)) return -1;
+                    return aSeq - bSeq;
+                });
+
+                // Re-renderiza lista (se o modal estiver aberto, aparece na hora)
+                renderAddressList(planilhaAddressData);
+            } catch (e) {
+                // Falha silenciosa (não pode quebrar o fluxo do app)
+            }
+        }
                 }
             }
         }
