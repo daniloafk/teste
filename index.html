@@ -14761,6 +14761,39 @@ try {
                 .trim();
         }
 
+
+        // Extrai o identificador "útil" do QR para comparação offline/online
+        // Aceita QR contendo URL, querystring, prefixos, etc.
+        function extractQrToken(raw) {
+            if (raw === null || raw === undefined) return '';
+            const s = String(raw).trim();
+
+            // Tenta pegar parâmetros comuns em URLs (ex: ...?spx_tn=123 ou ...?tn=123)
+            try {
+                if (s.includes('://') || s.includes('?')) {
+                    const u = new URL(s);
+                    const cand = u.searchParams.get('spx_tn') || u.searchParams.get('tn') || u.searchParams.get('id');
+                    if (cand) return String(cand).trim();
+                }
+            } catch (e) {}
+
+            // Extrai o maior bloco de dígitos (caso QR venha com texto misturado)
+            const digitMatches = s.match(/\d{4,}/g);
+            if (digitMatches && digitMatches.length) {
+                digitMatches.sort((a,b)=>b.length-a.length);
+                return digitMatches[0];
+            }
+
+            // Fallback: mantém somente caracteres alfanuméricos e alguns separadores
+            return s.replace(/[^0-9a-zA-Z_-]/g, '').trim();
+        }
+
+        // Normaliza IDs para comparação (remove espaços/pontuação e padroniza)
+        function normalizeQrId(id) {
+            if (id === null || id === undefined) return '';
+            return String(id).trim().replace(/[^0-9a-zA-Z_-]/g, '');
+        }
+
         // ============================================
         // FAST CLIENT LOOKUP - Cache-first com timeout
         // ============================================
@@ -15064,13 +15097,24 @@ try {
                             // - matchType === 'exact' -> JÁ CADASTRADO, não mostra
                             // - matchType === 'similarity' -> match por similaridade, MOSTRA
                             // - matchType === null -> não cadastrado, MOSTRA
+                            // Associa IDs (spx_tn) individuais ao endereço quando disponíveis
+                            // Isso melhora o match do QR offline (IDs alinhados com allAddresses/sequences)
+                            try {
+                                const idsArr = props.ids ? String(props.ids).split(',').map(s => s.trim()).filter(Boolean) : [];
+                                addressPairs = addressPairs.map((pair, pairIdx) => {
+                                    const idForPair = pair.id || idsArr[pairIdx] || null;
+                                    return Object.assign({ _idx: pairIdx, id: idForPair }, pair);
+                                });
+                            } catch (e) {}
+
                             const unregisteredPairs = addressPairs.filter(pair =>
                                 pair.matchType !== 'exact'
                             );
 
                             // Retorna um item para cada endereço não cadastrado do grupo
                             return unregisteredPairs.map(pair => ({
-                                id: props.ids ? props.ids.split(',')[0] : props.id,
+                                id: pair.id || (props.ids ? String(props.ids).split(',')[0].trim() : props.id),
+                                spx_tn: pair.id || null,
                                 sequence: pair.sequence || 0,
                                 destination_address: pair.address || '',
                                 bairro: pair.bairro || props.bairro || '',
@@ -15406,6 +15450,9 @@ try {
             qrLoading.classList.add('active');
             document.querySelector('.qr-loading-text').textContent = 'Buscando endereço...';
 
+            const qrTokenRaw = extractQrToken(qrData);
+            const qrToken = normalizeQrId(qrTokenRaw);
+
             let foundRecord = null;
 
             try {
@@ -15415,7 +15462,7 @@ try {
 
                 // 1. Tenta buscar pelo índice spx_tn (mais rápido)
                 try {
-                    foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', qrData);
+                    foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', qrTokenRaw);
                 } catch (err) {}
 
                 // 2. Se não encontrou, busca manual no cachedPlanilha
@@ -15424,7 +15471,7 @@ try {
                         const cachedData = await getAllFromOfflineDB('cachedPlanilha');
                         if (cachedData && cachedData.length > 0) {
                             foundRecord = cachedData.find(item =>
-                                item.spx_tn && item.spx_tn.toString() === qrData.toString()
+                                item.spx_tn && normalizeQrId(item.spx_tn) === qrToken
                             );
                         }
                     } catch (err) {}
@@ -15436,7 +15483,7 @@ try {
                         const offlineData = await getAllFromOfflineDB('pendingPlanilha');
                         if (offlineData && offlineData.length > 0) {
                             foundRecord = offlineData.find(item =>
-                                item.spx_tn && item.spx_tn.toString() === qrData.toString()
+                                item.spx_tn && normalizeQrId(item.spx_tn) === qrToken
                             );
                         }
                     } catch (err) {}
@@ -15453,7 +15500,7 @@ try {
                                 const ids = props.ids ? props.ids.split(',') : [];
 
                                 // Verifica se o QR code corresponde a algum ID
-                                if (ids.some(id => id.trim() === qrData.toString())) {
+                                if (ids.some(id => normalizeQrId(id) === qrToken)) {
                                     // Extrai dados do marcador
                                     const addresses = props.allAddresses ?
                                         (typeof props.allAddresses === 'string' ? props.allAddresses.split('|||') : props.allAddresses) :
@@ -15463,11 +15510,11 @@ try {
                                         [];
 
                                     // Encontra o índice correspondente ao ID
-                                    const idIndex = ids.findIndex(id => id.trim() === qrData.toString());
+                                    const idIndex = ids.findIndex(id => normalizeQrId(id) === qrToken);
 
                                     foundRecord = {
-                                        id: qrData,
-                                        spx_tn: qrData,
+                                        id: qrTokenRaw,
+                                        spx_tn: qrTokenRaw,
                                         destination_address: addresses[idIndex] || addresses[0] || props.address,
                                         sequence: sequences[idIndex] || sequences[0],
                                         bairro: props.bairro || '',
@@ -15482,6 +15529,33 @@ try {
                         }
                     } catch (err) {}
                 }
+
+                // 5. Fallback adicional: tenta encontrar direto na lista carregada do modal (planilhaAddressData)
+                // Isso cobre casos onde a planilha não foi cacheada, mas a lista manual está disponível.
+                if (!foundRecord) {
+                    try {
+                        if (Array.isArray(planilhaAddressData) && planilhaAddressData.length > 0) {
+                            const match = planilhaAddressData.find(item => {
+                                const cand = item.spx_tn || item.id || item.localId;
+                                return normalizeQrId(cand) === qrToken;
+                            });
+                            if (match) {
+                                foundRecord = {
+                                    id: qrTokenRaw,
+                                    spx_tn: qrTokenRaw,
+                                    destination_address: match.destination_address || '',
+                                    sequence: match.sequence || 0,
+                                    bairro: match.bairro || '',
+                                    city: match.city || '',
+                                    zipcode: match.zipcode || '',
+                                    latitude: match.latitude || null,
+                                    longitude: match.longitude || null
+                                };
+                            }
+                        }
+                    } catch (e) {}
+                }
+
 
                 // ============================================
                 // Se encontrou no cache, processa imediatamente
@@ -15515,7 +15589,7 @@ try {
                         const { data, error } = await db
                             .from('planilha')
                             .select('*')
-                            .eq('spx_tn', qrData)
+                            .eq('spx_tn', qrTokenRaw)
                             .limit(1);
 
                         if (!error && data && data.length > 0) {
