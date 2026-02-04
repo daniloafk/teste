@@ -1577,7 +1577,8 @@
         }
 
         /* Navigation User Marker - smooth animated */
-        .
+        .nav-user-marker {
+            width: 28px;
             height: 28px;
             position: relative;
             transition: transform 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94);
@@ -4351,7 +4352,7 @@
     </button>
 
     <!-- End Navigation Button -->
-    <button class="end-nav-btn" id="endNavBtn">
+    <button class="end-nav-btn" id="endNavBtn" aria-label="Encerrar navegação">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
@@ -4359,7 +4360,7 @@
     </button>
 
     <!-- Cadastrar Button -->
-    <button class="cadastrar-btn" id="cadastrarBtn">
+    <button class="cadastrar-btn" id="cadastrarBtn" aria-label="Cadastrar novo endereço">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
         </svg>
@@ -4500,7 +4501,7 @@
                     </div>
                     <h4>Arraste sua planilha aqui</h4>
                     <p>ou clique para selecionar um arquivo .xlsx</p>
-                    <input type="file" id="fileInput" accept=".xlsx,.xls">
+                    <input type="file" id="fileInput" accept=".xlsx,.xls" aria-label="Selecionar arquivo de planilha">
                 </div>
 
                 <!-- Preview -->
@@ -4613,7 +4614,7 @@
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
-                <input type="text" class="search-input" id="searchInput" placeholder="Buscar endereço...">
+                <input type="text" class="search-input" id="searchInput" placeholder="Buscar endereço..." aria-label="Buscar endereço de cliente">
             </div>
         </div>
 
@@ -4645,6 +4646,17 @@
     </div>
 
     <script>
+        // ============================================
+        // DEBUG SYSTEM - Controle de logs
+        // ============================================
+        // Defina como true para ativar logs de debug (apenas em desenvolvimento)
+        const DEBUG_MODE = false;
+        
+        // Função de log condicional - só executa se DEBUG_MODE estiver ativo
+        const debugLog = (...args) => { if (DEBUG_MODE) console.log(...args); };
+        const debugWarn = (...args) => { if (DEBUG_MODE) console.warn(...args); };
+        const debugError = (...args) => { if (DEBUG_MODE) console.error(...args); };
+
         // ============================================
         // LOADER SYSTEM - Controle de progresso
         // ============================================
@@ -5388,7 +5400,7 @@
                         try {
                             task();
                         } catch (e) {
-                            console.warn('Background task failed:', e);
+                            debugWarn('Background task failed:', e);
                         }
                     } else {
                         // Reagendar se não tiver tempo
@@ -5401,7 +5413,7 @@
                     try {
                         task();
                     } catch (e) {
-                        console.warn('Background task failed:', e);
+                        debugWarn('Background task failed:', e);
                     }
                 }, priority === 'low' ? 100 : 0);
             }
@@ -5443,7 +5455,7 @@
                         // Cache muito antigo, força refresh completo
                         await saveCacheMetadata('cachedClients', { count: 0, maxId: 0 });
                         await saveCacheMetadata('cachedPlanilha', { count: 0, maxId: 0 });
-                        console.log('🗑️ Cache antigo limpo');
+                        debugLog('🗑️ Cache antigo limpo');
                     }
                 }
             } catch (e) {
@@ -5475,13 +5487,13 @@
             if (pinIconCache && pinIconCache.size > 50) {
                 const keysToDelete = Array.from(pinIconCache.keys()).slice(0, 25);
                 keysToDelete.forEach(key => pinIconCache.delete(key));
-                console.log('🧹 Cache de ícones reduzido');
+                debugLog('🧹 Cache de ícones reduzido');
             }
             
             // Limpa array de clientes se muito grande e sidebar fechada
             if (allClientes && allClientes.length > 5000 && !sidebar?.classList.contains('active')) {
                 // Mantém apenas metadados básicos
-                console.log('🧹 Lista de clientes otimizada');
+                debugLog('🧹 Lista de clientes otimizada');
             }
             
             // Limpa dados pendentes já sincronizados em memória
@@ -5495,7 +5507,7 @@
             // Log uso de memória
             const mem = getMemoryUsage();
             if (mem) {
-                console.log(`📊 Memória: ${mem.usedJSHeapSize}MB / ${mem.totalJSHeapSize}MB`);
+                debugLog(`📊 Memória: ${mem.usedJSHeapSize}MB / ${mem.totalJSHeapSize}MB`);
             }
         }
         
@@ -5810,7 +5822,7 @@
             
             // Verificação de conexão antes de tentar sync
             if (!navigator.onLine) {
-                console.log('[SYNC] Offline - sincronização de clientes adiada');
+                debugLog('[SYNC] Offline - sincronização de clientes adiada');
                 return syncedAddresses;
             }
             
@@ -6082,7 +6094,7 @@
         // Sync pending deletes to Supabase
         // Retorna objeto com IDs deletados e endereços para reverter marcadores
         async function syncPendingDeletes() {
-            console.log('🔄 syncPendingDeletes iniciando...');
+            debugLog('🔄 syncPendingDeletes iniciando...');
             
             const result = {
                 deletedIds: [],
@@ -6090,13 +6102,13 @@
             };
             try {
                 const pendingDeletes = await getPendingFromOfflineDB('pendingDeletes');
-                console.log('📋 Exclusões pendentes:', pendingDeletes.length);
+                debugLog('📋 Exclusões pendentes:', pendingDeletes.length);
                 
                 if (pendingDeletes.length === 0) return result;
 
                 for (const item of pendingDeletes) {
                     try {
-                        console.log('🗑️ Sincronizando exclusão:', item.clientId, item.clientAddress);
+                        debugLog('🗑️ Sincronizando exclusão:', item.clientId, item.clientAddress);
                         
                         const { error } = await db
                             .from('clients')
@@ -6106,7 +6118,7 @@
                         if (error) {
                             // Se o erro for "não encontrado", considera como sucesso (já foi deletado)
                             if (!error.message?.includes('not found')) {
-                                console.warn('⚠️ Erro ao excluir:', error);
+                                debugWarn('⚠️ Erro ao excluir:', error);
                                 continue;
                             }
                         }
@@ -6120,18 +6132,18 @@
                             result.deletedAddresses.push(item.clientAddress);
                         }
                         
-                        console.log('✅ Exclusão sincronizada:', item.clientId);
+                        debugLog('✅ Exclusão sincronizada:', item.clientId);
                     } catch (err) {
                         // Erro na sincronização desta exclusão
-                        console.error('❌ Erro ao sincronizar exclusão:', err);
+                        debugError('❌ Erro ao sincronizar exclusão:', err);
                     }
                 }
             } catch (err) {
                 // Erro ao obter exclusões pendentes
-                console.error('❌ Erro ao obter exclusões pendentes:', err);
+                debugError('❌ Erro ao obter exclusões pendentes:', err);
             }
             
-            console.log('🔄 syncPendingDeletes finalizado:', result);
+            debugLog('🔄 syncPendingDeletes finalizado:', result);
             return result;
         }
 
@@ -6154,7 +6166,7 @@ async function mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers) {
         const remoteFeatures = supabaseMarkers.geojson.features;
         // Guardrail: datasets enormes podem travar dispositivos fracos
         if (remoteFeatures.length > 5000) {
-            console.warn('⚠️ Pulando mescla de marcadores (dataset muito grande):', remoteFeatures.length);
+            debugWarn('⚠️ Pulando mescla de marcadores (dataset muito grande):', remoteFeatures.length);
             return false;
         }
 
@@ -6412,11 +6424,11 @@ async function mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers) {
             }
         } catch (e) {}
 
-        console.log('🔄 Mescla otimizada aplicada (sem travar UI)');
+        debugLog('🔄 Mescla otimizada aplicada (sem travar UI)');
 
         return true;
     } catch (e) {
-        console.warn('⚠️ Falha na mescla otimizada:', e);
+        debugWarn('⚠️ Falha na mescla otimizada:', e);
         return false;
     }
 }
@@ -6459,7 +6471,7 @@ try {
     // Não é obrigatório: se falhar ou se ainda está inicializando, seguimos o sync normal
     await mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers);
 } catch (mergeErr) {
-    console.log('⚠️ Erro ao mesclar marcadores do Supabase:', mergeErr);
+    debugLog('⚠️ Erro ao mesclar marcadores do Supabase:', mergeErr);
 }
 
                 // =====================================================
@@ -6537,10 +6549,10 @@ try {
                             };
                             // Salva no Supabase com nova versão para outros dispositivos detectarem
                             await _doSaveRouteMarkersToSupabase(currentGeojson, stats);
-                            console.log('☁️ route_markers_cache atualizado após sync de status offline');
+                            debugLog('☁️ route_markers_cache atualizado após sync de status offline');
                         }
                     } catch (cacheErr) {
-                        console.log('⚠️ Erro ao atualizar route_markers_cache após sync:', cacheErr);
+                        debugLog('⚠️ Erro ao atualizar route_markers_cache após sync:', cacheErr);
                     }
                 }
 
@@ -6982,7 +6994,7 @@ try {
                                 // Atualiza o mapa
                                 map.getSource('route-stops').setData(mergedGeojson);
                                 updateFixedStatsPanel(mergedStats);
-                                console.log('✅ Marcadores sincronizados (merge offline/online)');
+                                debugLog('✅ Marcadores sincronizados (merge offline/online)');
                             } else if (cachedMarkers && cachedMarkers.geojson) {
                                 // Só tem local, envia para Supabase
                                 await _doSaveRouteMarkersToSupabase(cachedMarkers.geojson, cachedMarkers.stats);
@@ -6994,7 +7006,7 @@ try {
                             }
                             await longYield();
                         } catch (e) {
-                            console.log('⚠️ Erro ao sincronizar marcadores de rota:', e);
+                            debugLog('⚠️ Erro ao sincronizar marcadores de rota:', e);
                         }
                     }
 
@@ -7006,7 +7018,7 @@ try {
                         if (!isOnline) return;
                         const stillPending = await countPendingItems('pendingClients');
                         if (stillPending > 0) {
-                            console.log('[SYNC] Ainda há', stillPending, 'clientes pendentes, tentando novamente...');
+                            debugLog('[SYNC] Ainda há', stillPending, 'clientes pendentes, tentando novamente...');
                             await syncAllPendingData();
                         }
                     }, 10000); // Retry após 10 segundos
@@ -7365,7 +7377,7 @@ try {
         // Save route markers GeoJSON to cache (for persistence across page reloads)
         // Also saves to Supabase for cross-device sync when online (unless skipSupabase is true)
         async function saveRouteMarkersToCache(geojson, stats, skipSupabase = false) {
-            console.log('💾 saveRouteMarkersToCache chamada:', { 
+            debugLog('💾 saveRouteMarkersToCache chamada:', { 
                 hasOfflineDB: !!offlineDB, 
                 featuresCount: geojson?.features?.length,
                 skipSupabase,
@@ -7374,17 +7386,17 @@ try {
             
             // Tenta inicializar IndexedDB se não estiver disponível
             if (!offlineDB) {
-                console.log('⏳ Inicializando IndexedDB...');
+                debugLog('⏳ Inicializando IndexedDB...');
                 try {
                     await initOfflineDB();
                 } catch (e) {
-                    console.error('❌ Falha ao inicializar IndexedDB:', e);
+                    debugError('❌ Falha ao inicializar IndexedDB:', e);
                     return;
                 }
             }
             
             if (!offlineDB) {
-                console.warn('⚠️ IndexedDB não disponível, não salvando cache');
+                debugWarn('⚠️ IndexedDB não disponível, não salvando cache');
                 return;
             }
 
@@ -7409,7 +7421,7 @@ try {
 
                             const putRequest = store.put(data);
                             putRequest.onsuccess = () => {
-                                console.log('✅ Cache de marcadores salvo no IndexedDB');
+                                debugLog('✅ Cache de marcadores salvo no IndexedDB');
                                 resolve();
                             };
                             putRequest.onerror = () => reject(putRequest.error);
@@ -7421,14 +7433,14 @@ try {
                     }
                 });
             } catch (dbError) {
-                console.error('❌ Erro ao salvar no IndexedDB:', dbError);
+                debugError('❌ Erro ao salvar no IndexedDB:', dbError);
             }
 
             // Also save to Supabase for cross-device sync (non-blocking)
             // Skip if data came from Supabase to avoid infinite loop
             if (isOnline && !skipSupabase) {
                 saveRouteMarkersToSupabase(geojson, stats).catch((err) => {
-                    console.warn('⚠️ Falha ao salvar no Supabase:', err);
+                    debugWarn('⚠️ Falha ao salvar no Supabase:', err);
                 });
             }
         }
@@ -7531,14 +7543,14 @@ try {
                     }, { onConflict: 'id' });
 
                 if (error) {
-                    console.log('⚠️ Erro ao salvar marcadores no Supabase:', error.message);
+                    debugLog('⚠️ Erro ao salvar marcadores no Supabase:', error.message);
                     return false;
                 }
 
-                console.log(`☁️ Marcadores salvos no Supabase (v${newVersion})`);
+                debugLog(`☁️ Marcadores salvos no Supabase (v${newVersion})`);
                 return true;
             } catch (err) {
-                console.log('⚠️ Erro ao salvar marcadores no Supabase:', err);
+                debugLog('⚠️ Erro ao salvar marcadores no Supabase:', err);
                 return false;
             } finally {
                 isSavingToSupabase = false;
@@ -7583,7 +7595,7 @@ try {
                     .maybeSingle();
 
                 if (error) {
-                    console.log('⚠️ Erro ao carregar marcadores do Supabase:', error.message);
+                    debugLog('⚠️ Erro ao carregar marcadores do Supabase:', error.message);
                     return null;
                 }
 
@@ -7598,7 +7610,7 @@ try {
 
                 return null;
             } catch (err) {
-                console.log('⚠️ Erro ao carregar marcadores do Supabase:', err);
+                debugLog('⚠️ Erro ao carregar marcadores do Supabase:', err);
                 return null;
             }
         }
@@ -7612,7 +7624,7 @@ try {
                     .from('route_markers_cache')
                     .delete()
                     .eq('id', 'current');
-                console.log('☁️ Cache de marcadores limpo no Supabase');
+                debugLog('☁️ Cache de marcadores limpo no Supabase');
             } catch (err) {
                 // Silently fail
             }
@@ -7622,7 +7634,7 @@ try {
         // Prioridade: status "delivered" ou "not_delivered" tem prioridade sobre "pending"
         // Alterações de posição (similaridade) do local têm prioridade
         function mergeRouteMarkersGeojson(localGeojson, remoteGeojson) {
-            console.log('🔀 mergeRouteMarkersGeojson:', {
+            debugLog('🔀 mergeRouteMarkersGeojson:', {
                 localFeatures: localGeojson?.features?.length,
                 remoteFeatures: remoteGeojson?.features?.length
             });
@@ -7708,7 +7720,7 @@ try {
                 mergedFeatures.push(remoteFeature);
             });
 
-            console.log('✅ Merge concluído:', mergedFeatures.length, 'features');
+            debugLog('✅ Merge concluído:', mergedFeatures.length, 'features');
 
             return {
                 type: 'FeatureCollection',
@@ -7765,7 +7777,7 @@ try {
                     return; // Versão local já está atualizada
                 }
 
-                console.log(`🔄 Atualizando marcadores do Supabase (v${supabaseVersion})...`);
+                debugLog(`🔄 Atualizando marcadores do Supabase (v${supabaseVersion})...`);
 
                 // MERGE INTELIGENTE: Preserva propriedades locais importantes que podem não estar no servidor
                 // Isso evita perder matchedClientAddress e outras props durante sincronização
@@ -7854,7 +7866,7 @@ try {
                 // PROTEÇÃO ADICIONAL: Verifica novamente se houve alteração local durante a execução assíncrona
                 // Isso evita sobrescrever uma alteração do usuário que ocorreu enquanto buscávamos dados do servidor
                 if (Date.now() - lastRouteMarkersSave < 2000) {
-                    console.log('⏸️ Sync de marcadores cancelado: alteração local detectada durante execução');
+                    debugLog('⏸️ Sync de marcadores cancelado: alteração local detectada durante execução');
                     isSyncingMarkers = false;
                     return;
                 }
@@ -7865,10 +7877,10 @@ try {
 
                 // Atualiza a versão local
                 currentMarkersVersion = supabaseVersion;
-                console.log(`✅ Marcadores sincronizados do Supabase (v${supabaseVersion})`);
+                debugLog(`✅ Marcadores sincronizados do Supabase (v${supabaseVersion})`);
 
             } catch (err) {
-                console.log('⚠️ Erro ao sincronizar marcadores:', err);
+                debugLog('⚠️ Erro ao sincronizar marcadores:', err);
             } finally {
                 isSyncingMarkers = false;
             }
@@ -7907,13 +7919,13 @@ try {
 
         // Update route markers cache with current geojson data
         function updateRouteMarkersCache(geojsonData) {
-            console.log('💾 updateRouteMarkersCache chamada:', {
+            debugLog('💾 updateRouteMarkersCache chamada:', {
                 hasOfflineDB: !!offlineDB,
                 featuresCount: geojsonData?.features?.length
             });
             
             if (!geojsonData || !geojsonData.features) {
-                console.warn('⚠️ updateRouteMarkersCache: dados inválidos');
+                debugWarn('⚠️ updateRouteMarkersCache: dados inválidos');
                 return;
             }
 
@@ -7943,7 +7955,7 @@ try {
                 
                 // Salva no IndexedDB (funciona offline)
                 saveRouteMarkersToCache(geojsonData, statsToSave).then(() => {
-                    console.log('✅ Cache de marcadores atualizado');
+                    debugLog('✅ Cache de marcadores atualizado');
                 }).catch(err => {
                     console.error('❌ Erro ao salvar cache de marcadores:', err);
                 });
@@ -8392,14 +8404,14 @@ try {
                         // Tenta cache local primeiro
                         let loaded = await loadCachedRouteMarkers();
                         if (loaded) {
-                            console.log('📍 Marcadores de rota carregados do cache local');
+                            debugLog('📍 Marcadores de rota carregados do cache local');
                             // Se online, sincroniza status de entrega em background
                             if (isOnline) {
                                 setTimeout(() => syncDeliveryStatusFromSupabase(), 1000);
                             }
                         } else if (isOnline) {
                             // Não há cache local - tenta carregar do Supabase (outro dispositivo pode ter gerado)
-                            console.log('📍 Cache local vazio, tentando carregar do Supabase...');
+                            debugLog('📍 Cache local vazio, tentando carregar do Supabase...');
                             const supabaseData = await loadRouteMarkersFromSupabase();
                             if (supabaseData && supabaseData.geojson) {
                                 // Salva no cache local para próximas vezes (skipSupabase=true para evitar loop)
@@ -8407,14 +8419,14 @@ try {
                                 // Carrega os marcadores no mapa
                                 loaded = await loadCachedRouteMarkers();
                                 if (loaded) {
-                                    console.log('📍 Marcadores sincronizados do Supabase para este dispositivo');
+                                    debugLog('📍 Marcadores sincronizados do Supabase para este dispositivo');
                                     // Sincroniza status de entrega
                                     setTimeout(() => syncDeliveryStatusFromSupabase(), 1000);
                                 }
                             }
                         }
                     } catch (e) {
-                        console.log('⚠️ Erro ao carregar marcadores:', e);
+                        debugLog('⚠️ Erro ao carregar marcadores:', e);
                     }
                 }, 2000);
             });
@@ -8436,7 +8448,7 @@ try {
             // O GeolocateControl (com maximumAge: 5000) cuida de centralizar na posição real
             // Isso elimina a espera de "Obtendo localização..."
             updateLoader('gps', 'Carregando mapa...');
-            console.log('📍 Inicializando mapa imediatamente (GPS será atualizado pelo GeolocateControl)');
+            debugLog('📍 Inicializando mapa imediatamente (GPS será atualizado pelo GeolocateControl)');
             initMapWithCoords(defaultLat, defaultLng, 12);
         }
 
@@ -8550,7 +8562,7 @@ try {
                 GeolocateState.updatePosition(e.coords);
 
                 // Log para debug (pode ser removido em produção)
-                console.log('📍 Posição atualizada:', {
+                debugLog('📍 Posição atualizada:', {
                     lat: e.coords.latitude.toFixed(6),
                     lng: e.coords.longitude.toFixed(6),
                     accuracy: Math.round(e.coords.accuracy) + 'm',
@@ -8567,7 +8579,7 @@ try {
                 GeolocateState.isTracking = true;
                 GeolocateState.isWaitingForLocation = true;
                 GeolocateState.trackingMode = 'tracking';
-                console.log('🔵 Rastreamento iniciado');
+                debugLog('🔵 Rastreamento iniciado');
             });
 
             /**
@@ -8577,7 +8589,7 @@ try {
             geolocateControl.on('trackuserlocationend', () => {
                 GeolocateState.isTracking = false;
                 GeolocateState.trackingMode = 'off';
-                console.log('⚪ Rastreamento encerrado');
+                debugLog('⚪ Rastreamento encerrado');
             });
 
             /**
@@ -8586,7 +8598,7 @@ try {
              */
             geolocateControl.on('userlocationfocus', () => {
                 GeolocateState.isWaitingForLocation = false;
-                console.log('🎯 Centralizado no usuário');
+                debugLog('🎯 Centralizado no usuário');
             });
 
             /**
@@ -8595,7 +8607,7 @@ try {
              */
             geolocateControl.on('userlocationlostfocus', () => {
                 // Mapa foi movido pelo usuário, tracking continua mas câmera não segue
-                console.log('👆 Usuário moveu o mapa (foco perdido)');
+                debugLog('👆 Usuário moveu o mapa (foco perdido)');
             });
 
             /**
@@ -8613,7 +8625,7 @@ try {
                 };
 
                 const errorMsg = errorMessages[e.code] || 'Erro desconhecido';
-                console.warn('⚠️ Erro GPS:', errorMsg, `(tentativa ${GeolocateState.errorCount})`);
+                debugWarn('⚠️ Erro GPS:', errorMsg, `(tentativa ${GeolocateState.errorCount})`);
 
                 // Se muitos erros consecutivos, notifica o usuário
                 if (GeolocateState.errorCount >= 3) {
@@ -8630,7 +8642,7 @@ try {
              * Disparado quando o usuário está fora dos bounds máximos do mapa
              */
             geolocateControl.on('outofmaxbounds', () => {
-                console.warn('⚠️ Usuário fora dos limites do mapa');
+                debugWarn('⚠️ Usuário fora dos limites do mapa');
             });
 
             // ============================================
@@ -8659,7 +8671,7 @@ try {
 
                 // Só faz refresh se estava em modo tracking
                 if (GeolocateState && GeolocateState.isTracking) {
-                    console.log('🔄 Atualizando GPS (refresh seguro)...');
+                    debugLog('🔄 Atualizando GPS (refresh seguro)...');
                     // Pede 1 posição e deixa o filtro Perfil A decidir se aceita.
                     requestOneShotGpsUpdate('refresh', { recenter: true });
                 }
@@ -9362,20 +9374,20 @@ try {
 
         // Delete cliente - com ErrorHandler
         async function deleteCliente(id, address) {
-            console.log('🗑️ deleteCliente:', { id, address, isOnline });
+            debugLog('🗑️ deleteCliente:', { id, address, isOnline });
             
             try {
                 // Verifica se é um cliente criado offline (ID temporário: "new_xxx" ou "pending_xxx")
                 const isOfflineClient = typeof id === 'string' && (id.startsWith('new_') || id.startsWith('pending_'));
 
                 if (!isOnline) {
-                    console.log('📴 Modo offline - salvando exclusão localmente');
+                    debugLog('📴 Modo offline - salvando exclusão localmente');
                     
                     // OFFLINE: Salva exclusão pendente ou remove do pendingClients
                     if (isOfflineClient) {
                         // Cliente criado offline - remove diretamente do pendingClients
                         await removeOfflineClientById(id, address);
-                        console.log('✅ Cliente offline removido do pendingClients');
+                        debugLog('✅ Cliente offline removido do pendingClients');
                     } else {
                         // Cliente do Supabase - salva exclusão para sincronizar depois
                         // Salva também o endereço para reverter o marcador de rota
@@ -9386,7 +9398,7 @@ try {
                             timestamp: Date.now(),
                             synced: false
                         });
-                        console.log('💾 Exclusão salva para sincronização posterior');
+                        debugLog('💾 Exclusão salva para sincronização posterior');
                     }
 
                     showQuickSuccess();
@@ -9414,7 +9426,7 @@ try {
                 if (error) throw error;
 
                 showQuickSuccess();
-                console.log('☁️ Cliente excluído do Supabase');
+                debugLog('☁️ Cliente excluído do Supabase');
 
                 // PERFORMANCE: Remove incrementalmente em vez de recarregar tudo
                 await removeSingleClientFromUI(id, address);
@@ -9966,7 +9978,7 @@ try {
                 // Converte para string para comparação consistente
                 const clientIdStr = String(clientId);
                 
-                console.log('🗑️ removeSingleClientFromUI chamada:', { clientId, clientAddress, isOnline });
+                debugLog('🗑️ removeSingleClientFromUI chamada:', { clientId, clientAddress, isOnline });
 
                 // 0. Encontrar o cliente antes de remover (para atualizar marcador de rota)
                 let removedClient = null;
@@ -9994,10 +10006,10 @@ try {
                 // Se ainda não encontrou mas temos o endereço, cria objeto mínimo para reverter marcador
                 if (!removedClient && clientAddress) {
                     removedClient = { id: clientId, address: clientAddress };
-                    console.log('📝 Cliente não encontrado em cache, usando endereço fornecido:', clientAddress);
+                    debugLog('📝 Cliente não encontrado em cache, usando endereço fornecido:', clientAddress);
                 }
                 
-                console.log('👤 Cliente a remover:', removedClient);
+                debugLog('👤 Cliente a remover:', removedClient);
 
                 // 1. Remover do cache em memória (por ID e por endereço)
                 if (clientesCache.data) {
@@ -10078,17 +10090,17 @@ try {
                 // 6. Atualizar marcador de rota (reverter para estado original)
                 // CORREÇÃO: Sempre tenta reverter se tivermos o endereço, independente de online/offline
                 const hasRouteSource = map && map.getSource && map.getSource('route-stops');
-                console.log('🗺️ Verificando reversão de marcador:', {
+                debugLog('🗺️ Verificando reversão de marcador:', {
                     hasRemovedClient: !!removedClient,
                     hasAddress: !!(removedClient && removedClient.address),
                     hasRouteSource: hasRouteSource
                 });
                 
                 if (removedClient && removedClient.address && hasRouteSource) {
-                    console.log('🔄 Chamando revertRouteMarkerAfterClientDeletion...');
+                    debugLog('🔄 Chamando revertRouteMarkerAfterClientDeletion...');
                     await revertRouteMarkerAfterClientDeletion(removedClient);
                 } else {
-                    console.log('⚠️ Não foi possível reverter marcador:', {
+                    debugLog('⚠️ Não foi possível reverter marcador:', {
                         removedClient,
                         hasRouteSource
                     });
@@ -10113,7 +10125,7 @@ try {
                 const normalizedDeletedAddr = normalizeAddressForComparison(deletedClient.address);
                 const deletedAddrComponents = extractAddressComponentsSimple(deletedClient.address);
                 
-                console.log('🔄 Tentando reverter marcador para:', deletedClient.address);
+                debugLog('🔄 Tentando reverter marcador para:', deletedClient.address);
                 
                 let updated = false;
                 const iconsToGenerate = new Set();
@@ -10162,7 +10174,7 @@ try {
                     return Number.isFinite(lat) && Number.isFinite(lng);
                 })();
                 
-                console.log('📋 Dados da planilha encontrados:', {
+                debugLog('📋 Dados da planilha encontrados:', {
                     found: !!planilhaItem,
                     hasCoords: hadOriginalCoords,
                     coords: hadOriginalCoords ? [planilhaItem.longitude, planilhaItem.latitude] : null
@@ -10212,7 +10224,7 @@ try {
 
                     // CORREÇÃO: Processa marcadores registrados OU com status de entrega
                     if (isMatch && (props.isRegistered || hasDeliveryStatus)) {
-                        console.log('✅ Marcador encontrado para reverter:', featureAddr, props);
+                        debugLog('✅ Marcador encontrado para reverter:', featureAddr, props);
                         updated = true;
                         const packageCount = props.packageCount || 1;
 
@@ -10278,7 +10290,7 @@ try {
                         }
 
                         // Nenhum endereço cadastrado restante - volta ao estado original
-                        console.log('🔍 Verificando coordenadas para reversão:', {
+                        debugLog('🔍 Verificando coordenadas para reversão:', {
                             originalCoordinates: props.originalCoordinates,
                             previousCoordinates: props.previousCoordinates,
                             previousIsRegistered: props.previousIsRegistered,
@@ -10293,7 +10305,7 @@ try {
                                 const newIconId = `pin-red-${packageCount}`;
                                 iconsToGenerate.add(newIconId);
                                 
-                                console.log('✅ Revertendo para originalCoordinates:', originalCoords);
+                                debugLog('✅ Revertendo para originalCoordinates:', originalCoords);
 
                                 return {
                                     ...feature,
@@ -10429,14 +10441,14 @@ try {
                         // PRIORIDADE 4: Marcador tinha status de entrega mas não tem coordenadas anteriores
                         // Nesse caso, marca para remoção completa do mapa
                         if (hasDeliveryStatus) {
-                            console.log('🗑️ Removendo marcador entregue após exclusão do cadastro:', featureAddr);
+                            debugLog('🗑️ Removendo marcador entregue após exclusão do cadastro:', featureAddr);
                             return null;
                         }
 
                         // PRIORIDADE 5: Não tinha coordenadas originais salvas
                         // CORREÇÃO: Em vez de remover, mantém o marcador na posição atual mas muda para vermelho
                         // Isso é importante para o caso offline onde as coordenadas podem não ter sido salvas
-                        console.log('⚠️ Sem coordenadas originais, mantendo marcador vermelho na posição atual');
+                        debugLog('⚠️ Sem coordenadas originais, mantendo marcador vermelho na posição atual');
                         const currentCoords = feature.geometry.coordinates;
                         const newIconId = `pin-red-${packageCount}`;
                         iconsToGenerate.add(newIconId);
@@ -10507,9 +10519,9 @@ try {
 
                     // Salva cache atualizado (IndexedDB) - FUNCIONA OFFLINE
                     try {
-                        console.log('💾 Salvando cache de marcadores após exclusão...');
+                        debugLog('💾 Salvando cache de marcadores após exclusão...');
                         await saveRouteMarkersToCache(newGeojson, stats, true); // skipSupabase = true, vamos salvar manualmente abaixo
-                        console.log('✅ Cache local salvo');
+                        debugLog('✅ Cache local salvo');
                     } catch (cacheErr) {
                         console.error('❌ Erro ao salvar cache local após exclusão:', cacheErr);
                     }
@@ -10519,21 +10531,21 @@ try {
                     if (isOnline) {
                         try {
                             await _doSaveRouteMarkersToSupabase(newGeojson, stats);
-                            console.log('☁️ Marcador de rota revertido e sincronizado com Supabase após exclusão');
+                            debugLog('☁️ Marcador de rota revertido e sincronizado com Supabase após exclusão');
                         } catch (supabaseErr) {
                             console.error('⚠️ Erro ao sincronizar reversão de marcador com Supabase:', supabaseErr);
                             // Não é crítico offline - será sincronizado quando voltar online
                         }
                     } else {
-                        console.log('📴 Offline - marcador revertido apenas localmente, será sincronizado quando online');
+                        debugLog('📴 Offline - marcador revertido apenas localmente, será sincronizado quando online');
                     }
 
                     // Atualiza o fixed stats panel
                     updateFixedStatsPanel(stats);
                     
-                    console.log('✅ Marcador revertido com sucesso. Features restantes:', updatedFeatures.length);
+                    debugLog('✅ Marcador revertido com sucesso. Features restantes:', updatedFeatures.length);
                 } else {
-                    console.log('⚠️ Nenhum marcador encontrado para reverter');
+                    debugLog('⚠️ Nenhum marcador encontrado para reverter');
                 }
             } catch (err) {
                 // Erro ao reverter marcador - falha silenciosa
@@ -10770,7 +10782,10 @@ try {
             ).join('');
 
             // Check if there are multiple addresses in this stop
-            const addressSequencePairs = props.addressSequencePairs ? JSON.parse(props.addressSequencePairs) : [];
+            let addressSequencePairs = [];
+            try {
+                addressSequencePairs = props.addressSequencePairs ? JSON.parse(props.addressSequencePairs) : [];
+            } catch (e) { /* JSON inválido, usa array vazio */ }
             const hasMultipleAddresses = addressSequencePairs.length > 1;
 
             // Build bairro and CEP info display
@@ -11154,7 +11169,7 @@ try {
                 return false;
             }
 
-            console.log('📦 updateDeliveryStatus:', { ids, status, isOnline });
+            debugLog('📦 updateDeliveryStatus:', { ids, status, isOnline });
 
             // SEMPRE atualiza o cache local da planilha (independente de online/offline)
             try {
@@ -11167,10 +11182,10 @@ try {
                         return item;
                     });
                     await saveCacheToDB('cachedPlanilha', updatedPlanilha);
-                    console.log('✅ Cache da planilha atualizado localmente');
+                    debugLog('✅ Cache da planilha atualizado localmente');
                 }
             } catch (cacheErr) {
-                console.warn('⚠️ Erro ao atualizar cache da planilha:', cacheErr);
+                debugWarn('⚠️ Erro ao atualizar cache da planilha:', cacheErr);
             }
 
             // If offline, save to pending queue
@@ -11182,7 +11197,7 @@ try {
                         timestamp: Date.now()
                     });
                     updateOfflineIndicator();
-                    console.log('💾 Status salvo para sincronização posterior');
+                    debugLog('💾 Status salvo para sincronização posterior');
                     return true;
                 } catch (err) {
                     console.error('❌ Erro ao salvar status offline:', err);
@@ -11202,7 +11217,7 @@ try {
                     throw error;
                 }
 
-                console.log('☁️ Status sincronizado com Supabase');
+                debugLog('☁️ Status sincronizado com Supabase');
                 return data && data.length > 0;
             } catch (error) {
                 // Falhou online, salva offline
@@ -11213,7 +11228,7 @@ try {
                         timestamp: Date.now()
                     });
                     updateOfflineIndicator();
-                    console.log('💾 Falha no Supabase, salvo offline');
+                    debugLog('💾 Falha no Supabase, salvo offline');
                     return true;
                 } catch (offlineErr) {
                     ErrorHandler.handle(error, { action: 'updateDeliveryStatus', ids, status }, {
@@ -11329,7 +11344,7 @@ try {
                     // PROTEÇÃO ADICIONAL: Verifica novamente se houve alteração local durante a execução assíncrona
                     // Isso evita sobrescrever uma alteração do usuário que ocorreu enquanto buscávamos dados do servidor
                     if (Date.now() - lastRouteMarkersSave < 2000) {
-                        console.log('⏸️ Sync cancelado: alteraç��o local detectada durante execução');
+                        debugLog('⏸️ Sync cancelado: alteração local detectada durante execução');
                         return;
                     }
 
@@ -11358,10 +11373,10 @@ try {
                     source.setData(sourceData);
                     updateRouteMarkersCache(sourceData);
                     updateFixedStatsPanel();
-                    console.log('📍 Marcadores sincronizados do Supabase (status/similarity)');
+                    debugLog('📍 Marcadores sincronizados do Supabase (status/similarity)');
                 }
             } catch (e) {
-                console.log('⚠️ Erro ao sincronizar marcadores do Supabase:', e);
+                debugLog('⚠️ Erro ao sincronizar marcadores do Supabase:', e);
             }
         }
 
@@ -13167,7 +13182,10 @@ try {
                         ).join('');
 
                         // Check if there are multiple addresses in this stop
-                        const addressSequencePairs = props.addressSequencePairs ? JSON.parse(props.addressSequencePairs) : [];
+                        let addressSequencePairs = [];
+                        try {
+                            addressSequencePairs = props.addressSequencePairs ? JSON.parse(props.addressSequencePairs) : [];
+                        } catch (e) { /* JSON inválido, usa array vazio */ }
                         const hasMultipleAddresses = addressSequencePairs.length > 1;
 
                         // Build bairro and CEP info display
@@ -13734,7 +13752,10 @@ try {
                         ).join('');
 
                         // Check if there are multiple addresses in this stop
-                        const addressSequencePairs = props.addressSequencePairs ? JSON.parse(props.addressSequencePairs) : [];
+                        let addressSequencePairs = [];
+                        try {
+                            addressSequencePairs = props.addressSequencePairs ? JSON.parse(props.addressSequencePairs) : [];
+                        } catch (e) { /* JSON inválido, usa array vazio */ }
                         const hasMultipleAddresses = addressSequencePairs.length > 1;
 
                         // Build bairro and CEP info display
@@ -16937,14 +16958,6 @@ function handleGpsPosition(pos) {
             );
         }
 
-
-        // Compatibilidade: estas funções existiam no código antigo (DOM marker).
-        // Agora não são mais necessárias, pois o "ponto azul" é layer nativo.
-        function createNavUserMarker() { return null; }
-        function updateNavUserMarker() {}
-        function removeNavUserMarker() {}
-        function setGeolocateMarkerVisible() {}
-
 // Calculate distance from point to line segment
         function pointToLineDistance(point, lineStart, lineEnd) {
             const { lat: lat0, lng: lng0 } = point;
@@ -17521,7 +17534,7 @@ function handleGpsPosition(pos) {
                         scope: './'
                     });
 
-                    console.log('✅ Service Worker registrado:', registration.scope);
+                    debugLog('✅ Service Worker registrado:', registration.scope);
 
                     // Escuta atualizações
                     registration.addEventListener('updatefound', () => {
@@ -17590,7 +17603,7 @@ function handleGpsPosition(pos) {
             const { outcome } = await deferredInstallPrompt.userChoice;
 
             if (outcome === 'accepted') {
-                console.log('✅ PWA instalado');
+                debugLog('✅ PWA instalado');
                 hideInstallButton();
             }
 
@@ -17610,7 +17623,7 @@ function handleGpsPosition(pos) {
         window.addEventListener('appinstalled', () => {
             hideInstallButton();
             deferredInstallPrompt = null;
-            console.log('✅ App instalado com sucesso');
+            debugLog('✅ App instalado com sucesso');
         });
 
         // Notificação de atualização disponível
