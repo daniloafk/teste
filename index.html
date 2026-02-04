@@ -6135,6 +6135,173 @@
             return result;
         }
 
+
+
+/**
+ * PASSO 0 (otimizado): Mescla route_markers_cache do Supabase com o GeoJSON local
+ * sem travar a UI nem causar piscadas durante a inicialização.
+ * - Só roda quando o mapa já terminou de carregar (mapFullyInitialized)
+ * - Faz processamento em lotes com yields para não bloquear o thread principal
+ * - Se o dataset for grande demais, pula a mescla (evita travamentos) e segue o sync normal
+ */
+async function mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers) {
+    try {
+        // Não roda durante a inicialização do mapa
+        if (!mapFullyInitialized) return false;
+        if (!supabaseMarkers || !supabaseMarkers.geojson || !supabaseMarkers.geojson.features) return false;
+        if (!map || !map.getSource || !map.getSource('route-stops')) return false;
+
+        const remoteFeatures = supabaseMarkers.geojson.features;
+        // Guardrail: datasets enormes podem travar dispositivos fracos
+        if (remoteFeatures.length > 5000) {
+            console.warn('⚠️ Pulando mescla de marcadores (dataset muito grande):', remoteFeatures.length);
+            return false;
+        }
+
+        const source = map.getSource('route-stops');
+        const localData = source._data;
+
+        if (!localData || !localData.features) return false;
+
+        // Cria mapa de features locais por ids
+        const localFeaturesMap = new Map();
+        localData.features.forEach(f => {
+            if (f && f.properties && f.properties.ids) {
+                localFeaturesMap.set(f.properties.ids, f);
+            }
+        });
+
+        // Conjuntos para proteger alterações locais pendentes
+        const pendingAddressesSet = new Set();
+        const pendingSimilarityIdsSet = new Set();
+
+        try {
+            const pendingClients = await getAllFromOfflineDB('pendingClients');
+            if (pendingClients && pendingClients.length > 0) {
+                pendingClients.forEach(c => {
+                    if (c && c.address) pendingAddressesSet.add(normalizeAddressForComparison(c.address));
+                });
+            }
+        } catch (e) {}
+
+        try {
+            const pendingSimilarityOverrides = await getAllFromOfflineDB('pendingSimilarityOverrides');
+            if (pendingSimilarityOverrides && pendingSimilarityOverrides.length > 0) {
+                pendingSimilarityOverrides.forEach(item => {
+                    if (item && item.ids && Array.isArray(item.ids)) {
+                        item.ids.forEach(id => pendingSimilarityIdsSet.add(id));
+                    }
+                });
+            }
+        } catch (e) {}
+
+        // Também protege exclusões pendentes (evita piscada do verde reaparecendo)
+        const pendingDeleteAddressesSet = new Set();
+        try {
+            const pendingDeletes = await getAllFromOfflineDB('pendingDeletes');
+            if (pendingDeletes && pendingDeletes.length > 0) {
+                pendingDeletes.forEach(d => {
+                    if (d && d.clientAddress) pendingDeleteAddressesSet.add(normalizeAddressForComparison(d.clientAddress));
+                });
+            }
+        } catch (e) {}
+
+        // Mescla em lotes para não travar
+        const mergedFeatures = [];
+        const BATCH = 250;
+        for (let i = 0; i < remoteFeatures.length; i++) {
+            const remoteFeature = remoteFeatures[i];
+            const localFeature = localFeaturesMap.get(remoteFeature?.properties?.ids);
+
+            // Remove imediatamente qualquer feature remota ligada a um endereço deletado pendente
+            let shouldFilterOut = false;
+            const remoteAllAddresses = remoteFeature?.properties?.allAddresses;
+            if (remoteAllAddresses) {
+                const addrList = typeof remoteAllAddresses === 'string' ? remoteAllAddresses.split('|||') : remoteAllAddresses;
+                shouldFilterOut = addrList.some(addr => pendingDeleteAddressesSet.has(normalizeAddressForComparison(addr)));
+            }
+            if (shouldFilterOut) {
+                if ((i + 1) % BATCH === 0) await yieldToMain();
+                continue;
+            }
+
+            if (!localFeature) {
+                mergedFeatures.push(remoteFeature);
+            } else {
+                // Verifica se algum endereço deste marcador teve alteração local pendente
+                let hasLocalPendingChange = false;
+                const allAddresses = remoteAllAddresses;
+                if (allAddresses) {
+                    const addrList = typeof allAddresses === 'string' ? allAddresses.split('|||') : allAddresses;
+                    hasLocalPendingChange = addrList.some(addr => pendingAddressesSet.has(normalizeAddressForComparison(addr)));
+                }
+
+                // Verifica alteração de similaridade pendente
+                let hasSimilarityPendingChange = false;
+                const featureIds = remoteFeature?.properties?.ids;
+                if (featureIds) {
+                    const idsArray = featureIds.split(',').map(id => parseInt(id.trim())).filter(n => !isNaN(n));
+                    hasSimilarityPendingChange = idsArray.some(id => pendingSimilarityIdsSet.has(id));
+                }
+
+                if (hasLocalPendingChange || hasSimilarityPendingChange) {
+                    mergedFeatures.push(localFeature);
+                } else {
+                    mergedFeatures.push({
+                        ...remoteFeature,
+                        properties: {
+                            ...remoteFeature.properties,
+                            previousCoordinates: localFeature?.properties?.previousCoordinates || remoteFeature.properties.previousCoordinates,
+                            previousMatchType: localFeature?.properties?.previousMatchType || remoteFeature.properties.previousMatchType,
+                            previousIsRegistered: localFeature?.properties?.previousIsRegistered !== undefined
+                                ? localFeature.properties.previousIsRegistered
+                                : remoteFeature.properties.previousIsRegistered
+                        }
+                    });
+                }
+            }
+
+            if ((i + 1) % BATCH === 0) await yieldToMain();
+        }
+
+        // Adiciona features locais que não existem no remoto (mas filtra as deletadas pendentes)
+        localData.features.forEach(localFeature => {
+            const existsInRemote = remoteFeatures.some(rf => rf?.properties?.ids === localFeature?.properties?.ids);
+            if (existsInRemote) return;
+
+            // Filtra também pelo endereço deletado pendente
+            const localAllAddresses = localFeature?.properties?.allAddresses;
+            if (localAllAddresses) {
+                const addrList = typeof localAllAddresses === 'string' ? localAllAddresses.split('|||') : localAllAddresses;
+                const shouldFilterOut = addrList.some(addr => pendingDeleteAddressesSet.has(normalizeAddressForComparison(addr)));
+                if (shouldFilterOut) return;
+            }
+
+            mergedFeatures.push(localFeature);
+        });
+
+        const mergedGeojson = { type: 'FeatureCollection', features: mergedFeatures };
+
+        // Atualiza o mapa e o cache local (skipSupabase=true para evitar loop)
+        source.setData(mergedGeojson);
+        await saveRouteMarkersToCache(mergedGeojson, supabaseMarkers.stats, true);
+
+        // Atualiza versão local, se existir
+        try {
+            if (supabaseMarkers.version) {
+                currentMarkersVersion = supabaseMarkers.version;
+            }
+        } catch (e) {}
+
+        console.log('🔄 Mescla otimizada aplicada (sem travar UI)');
+
+        return true;
+    } catch (e) {
+        console.warn('⚠️ Falha na mescla otimizada:', e);
+        return false;
+    }
+}
+
         // Main sync function - syncs all pending data
         // Retorna objeto com o que foi sincronizado para atualização incremental
         async function syncAllPendingData() {
@@ -6161,135 +6328,21 @@
             updateOfflineIndicator();
 
             try {
-                // =====================================================
-                // PASSO 0: BAIXAR route_markers_cache DO SUPABASE PRIMEIRO
-                // Isso garante que temos os dados mais recentes de outros dispositivos
-                // ANTES de aplicar nossas alterações locais
-                // =====================================================
-                try {
-                    const supabaseMarkers = await loadRouteMarkersFromSupabase();
-                    if (supabaseMarkers && supabaseMarkers.geojson && map && map.getSource('route-stops')) {
-                        const source = map.getSource('route-stops');
-                        const localData = source._data;
 
-                        if (localData && localData.features) {
-                            // Cria mapa de features locais por ID
-                            const localFeaturesMap = new Map();
-                            localData.features.forEach(f => {
-                                if (f.properties && f.properties.ids) {
-                                    localFeaturesMap.set(f.properties.ids, f);
-                                }
-                            });
+// =====================================================
+// PASSO 0 (OTIMIZADO): Mesclar route_markers_cache do Supabase
+// - Só roda quando o mapa já finalizou (mapFullyInitialized)
+// - Em lotes com yield para não travar a UI
+// - Filtra exclusões pendentes para impedir "piscadas" de verde
+// =====================================================
+try {
+    const supabaseMarkers = await loadRouteMarkersFromSupabase();
+    // Não é obrigatório: se falhar ou se ainda está inicializando, seguimos o sync normal
+    await mergeRouteMarkersFromSupabaseBeforeSync(supabaseMarkers);
+} catch (mergeErr) {
+    console.log('⚠️ Erro ao mesclar marcadores do Supabase:', mergeErr);
+}
 
-                            // Obtém endereços de pendingClients para saber quais foram alterados localmente
-                            const pendingClients = await getAllFromOfflineDB('pendingClients');
-                            const pendingAddressesSet = new Set();
-                            if (pendingClients && pendingClients.length > 0) {
-                                pendingClients.forEach(c => {
-                                    if (c.address) {
-                                        pendingAddressesSet.add(normalizeAddressForComparison(c.address));
-                                    }
-                                });
-                            }
-
-                            // Obtém IDs de pendingSimilarityOverrides para saber quais marcadores tiveram alteração de similaridade
-                            const pendingSimilarityOverrides = await getAllFromOfflineDB('pendingSimilarityOverrides');
-                            const pendingSimilarityIdsSet = new Set();
-                            if (pendingSimilarityOverrides && pendingSimilarityOverrides.length > 0) {
-                                pendingSimilarityOverrides.forEach(item => {
-                                    if (item.ids && Array.isArray(item.ids)) {
-                                        item.ids.forEach(id => pendingSimilarityIdsSet.add(id));
-                                    }
-                                });
-                            }
-
-                            // Merge: para cada feature do Supabase, verifica se temos alteração local pendente
-                            const mergedFeatures = supabaseMarkers.geojson.features.map(remoteFeature => {
-                                const localFeature = localFeaturesMap.get(remoteFeature.properties.ids);
-
-                                if (!localFeature) {
-                                    // Não temos local, usa remoto
-                                    return remoteFeature;
-                                }
-
-                                // Verifica se algum endereço deste marcador tem alteração pendente
-                                let hasLocalPendingChange = false;
-                                const allAddresses = remoteFeature.properties.allAddresses;
-                                if (allAddresses) {
-                                    const addrList = typeof allAddresses === 'string'
-                                        ? allAddresses.split('|||')
-                                        : allAddresses;
-                                    hasLocalPendingChange = addrList.some(addr =>
-                                        pendingAddressesSet.has(normalizeAddressForComparison(addr))
-                                    );
-                                }
-
-                                // Verifica se este marcador tem alteração de similaridade pendente
-                                let hasSimilarityPendingChange = false;
-                                const featureIds = remoteFeature.properties.ids;
-                                if (featureIds) {
-                                    const idsArray = featureIds.split(',').map(id => parseInt(id.trim()));
-                                    hasSimilarityPendingChange = idsArray.some(id => pendingSimilarityIdsSet.has(id));
-                                }
-
-                                if (hasLocalPendingChange || hasSimilarityPendingChange) {
-                                    // Temos alteração local pendente (cliente ou similaridade) - MANTÉM o feature LOCAL
-                                    // As coordenadas e propriedades serão mantidas do estado local
-                                    return localFeature;
-                                } else {
-                                    // Sem alteração local pendente - USA o feature do SUPABASE
-                                    // Mas preserva algumas propriedades locais importantes
-                                    return {
-                                        ...remoteFeature,
-                                        properties: {
-                                            ...remoteFeature.properties,
-                                            // Preserva dados de reversão se existirem localmente
-                                            previousCoordinates: localFeature.properties.previousCoordinates || remoteFeature.properties.previousCoordinates,
-                                            previousMatchType: localFeature.properties.previousMatchType || remoteFeature.properties.previousMatchType,
-                                            previousIsRegistered: localFeature.properties.previousIsRegistered !== undefined
-                                                ? localFeature.properties.previousIsRegistered
-                                                : remoteFeature.properties.previousIsRegistered
-                                        }
-                                    };
-                                }
-                            });
-
-                            // Adiciona features locais que não existem no remoto
-                            localData.features.forEach(localFeature => {
-                                const existsInRemote = supabaseMarkers.geojson.features.some(
-                                    rf => rf.properties.ids === localFeature.properties.ids
-                                );
-                                if (!existsInRemote) {
-                                    mergedFeatures.push(localFeature);
-                                }
-                            });
-
-                            // Atualiza o mapa com os dados mesclados
-                            const mergedGeojson = {
-                                type: 'FeatureCollection',
-                                features: mergedFeatures
-                            };
-
-                            // Anti-piscada: filtra endereços deletados (tombstones + pendingDeletes) ANTES de renderizar
-                            const deletionFilterSet0 = await buildDeletionFilterSet();
-                            const mergedGeojsonFiltered0 = applyRecentDeletionTombstonesToRouteGeojson(mergedGeojson, deletionFilterSet0);
-
-                            source.setData(mergedGeojsonFiltered0);
-
-                            // Salva no cache local (sem enviar para Supabase ainda)
-                            await saveRouteMarkersToCache(mergedGeojsonFiltered0, supabaseMarkers.stats, true);
-
-                            // Atualiza versão local
-                            if (supabaseMarkers.version) {
-                                currentMarkersVersion = supabaseMarkers.version;
-                            }
-
-                            console.log('🔄 Marcadores mesclados com Supabase antes de sincronizar pendentes');
-                        }
-                    }
-                } catch (mergeErr) {
-                    console.log('⚠️ Erro ao mesclar marcadores do Supabase:', mergeErr);
-                }
                 // =====================================================
                 // PERFORMANCE: Usa longYield entre syncs para não travar o mapa durante interação
                 const clientAddresses = await syncPendingClients();
@@ -6786,12 +6839,8 @@
                                 // Merge: combina alterações locais com remotas
                                 const mergedGeojson = mergeRouteMarkersGeojson(cachedMarkers.geojson, supabaseMarkers.geojson);
 
-                                // Anti-flicker: remove marcadores excluídos recentemente antes de salvar/renderizar
-                                const deletionFilterSet = await buildDeletionFilterSet((typeof syncResult !== 'undefined' && syncResult && syncResult.syncedDeletedAddresses) ? syncResult.syncedDeletedAddresses : []);
-                                const mergedGeojsonFiltered = applyRecentDeletionTombstonesToRouteGeojson(mergedGeojson, deletionFilterSet);
-
                                 // Recalcula stats
-                                const features = mergedGeojsonFiltered.features;
+                                const features = mergedGeojson.features;
                                 const mergedStats = {
                                     total: features.filter(f => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
                                     registered: features.filter(f => f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
@@ -6801,11 +6850,11 @@
                                 };
 
                                 // Salva o merge no Supabase e local
-                                await _doSaveRouteMarkersToSupabase(mergedGeojsonFiltered, mergedStats);
-                                await saveRouteMarkersToCache(mergedGeojsonFiltered, mergedStats, true);
+                                await _doSaveRouteMarkersToSupabase(mergedGeojson, mergedStats);
+                                await saveRouteMarkersToCache(mergedGeojson, mergedStats, true);
 
                                 // Atualiza o mapa
-                                map.getSource('route-stops').setData(mergedGeojsonFiltered);
+                                map.getSource('route-stops').setData(mergedGeojson);
                                 updateFixedStatsPanel(mergedStats);
                                 console.log('✅ Marcadores sincronizados (merge offline/online)');
                             } else if (cachedMarkers && cachedMarkers.geojson) {
@@ -6813,10 +6862,8 @@
                                 await _doSaveRouteMarkersToSupabase(cachedMarkers.geojson, cachedMarkers.stats);
                             } else if (supabaseMarkers && supabaseMarkers.geojson) {
                                 // Só tem remoto, baixa para local
-                                const deletionFilterSetRemote = await buildDeletionFilterSet((typeof syncResult !== 'undefined' && syncResult && syncResult.syncedDeletedAddresses) ? syncResult.syncedDeletedAddresses : []);
-                                const remoteFiltered = applyRecentDeletionTombstonesToRouteGeojson(supabaseMarkers.geojson, deletionFilterSetRemote);
-                                await saveRouteMarkersToCache(remoteFiltered, supabaseMarkers.stats, true);
-                                map.getSource('route-stops').setData(remoteFiltered);
+                                await saveRouteMarkersToCache(supabaseMarkers.geojson, supabaseMarkers.stats, true);
+                                map.getSource('route-stops').setData(supabaseMarkers.geojson);
                                 updateFixedStatsPanel(supabaseMarkers.stats);
                             }
                             await longYield();
@@ -9190,11 +9237,6 @@
         // Delete cliente - com ErrorHandler
         async function deleteCliente(id, address) {
             console.log('🗑️ deleteCliente:', { id, address, isOnline });
-            // Anti-flicker: marca este endereço como excluído recentemente
-            // para que o merge online não o re-renderize por alguns instantes.
-            if (typeof rememberRecentlyDeletedAddress === 'function') {
-                rememberRecentlyDeletedAddress(address);
-            }
             
             try {
                 // Verifica se é um cliente criado offline (ID temporário: "new_xxx" ou "pending_xxx")
@@ -9466,7 +9508,7 @@
                 // Primeira passada: identifica matches e coleta ícones necessários
                 const updatedFeatures = features.map(feature => {
                     const props = feature.properties;
-                    const featureAddr = props.address || props.destination_address || props.destinationAddress || '';
+                    const featureAddr = props.address || '';
                     const normalizedFeatureAddr = normalizeAddressForComparison(featureAddr);
 
                     // STEP 1: Comparação exata primeiro
@@ -9912,18 +9954,12 @@
                 if (removedClient && removedClient.address && hasRouteSource) {
                     console.log('🔄 Chamando revertRouteMarkerAfterClientDeletion...');
                     await revertRouteMarkerAfterClientDeletion(removedClient);
-                        // Após excluir, o endereço deve voltar a aparecer na lista manual de cadastro
-                        await addAddressBackToManualList(removedClient.address);
                 } else {
                     console.log('⚠️ Não foi possível reverter marcador:', {
                         removedClient,
                         hasRouteSource
                     });
                 }
-                    // Mesmo sem reverter o marcador, devolve o endereço para a lista manual
-                    if (removedClient && removedClient.address) {
-                        await addAddressBackToManualList(removedClient.address);
-                    }
 
             } catch (err) {
                 // Erro na remoção incremental - fallback para reload completo
@@ -9994,7 +10030,7 @@
 
                 const updatedFeatures = features.map(feature => {
                     const props = feature.properties;
-                    const featureAddr = props.address || props.destination_address || props.destinationAddress || '';
+                    const featureAddr = props.address || '';
                     const normalizedFeatureAddr = normalizeAddressForComparison(featureAddr);
 
                     // MATCH 1: Comparação exata
@@ -14585,170 +14621,6 @@
                 .trim();
         }
 
-        // ==========================================================
-        // RECENT DELETION TOMBSTONES (anti-flicker during online sync)
-        // ==========================================================
-        // Quando o usuário exclui um cadastro offline, o Supabase ainda pode conter
-        // o marcador antigo por alguns segundos/minutos. Durante o merge (online),
-        // isso pode causar uma "piscada" (marker reaparece e some).
-        // Solução: manter um conjunto curto de "tombstones" (endereços excluídos recentemente)
-        // e aplicar filtro antes de renderizar/salvar o GeoJSON de rota.
-        const RECENT_DELETE_TOMBSTONE_KEY = 'recentlyDeletedRouteMarkers';
-        const RECENT_DELETE_TTL_MS = 2 * 60 * 1000; // 2 minutos
-        const RECENT_DELETE_MAX = 150;
-
-        function rememberRecentlyDeletedAddress(address) {
-            try {
-                if (!address) return;
-                const k = normalizeAddressForComparison(address);
-                if (!k) return;
-
-                const now = Date.now();
-                let list = [];
-                try { list = JSON.parse(localStorage.getItem(RECENT_DELETE_TOMBSTONE_KEY) || '[]'); } catch { list = []; }
-
-                // Remove expirados e duplicados
-                list = (Array.isArray(list) ? list : [])
-                    .filter(it => it && it.k && it.t && (now - it.t) <= RECENT_DELETE_TTL_MS && it.k !== k);
-
-                list.unshift({ k, t: now });
-                if (list.length > RECENT_DELETE_MAX) list = list.slice(0, RECENT_DELETE_MAX);
-
-                localStorage.setItem(RECENT_DELETE_TOMBSTONE_KEY, JSON.stringify(list));
-            } catch (e) {
-                // Silencioso
-            }
-        }
-
-        function getRecentlyDeletedAddressSet() {
-            const now = Date.now();
-            let list = [];
-            try { list = JSON.parse(localStorage.getItem(RECENT_DELETE_TOMBSTONE_KEY) || '[]'); } catch { list = []; }
-            const valid = (Array.isArray(list) ? list : []).filter(it => it && it.k && it.t && (now - it.t) <= RECENT_DELETE_TTL_MS);
-            // Persist pruning (evita crescimento)
-            try { localStorage.setItem(RECENT_DELETE_TOMBSTONE_KEY, JSON.stringify(valid)); } catch {}
-            return new Set(valid.map(it => it.k));
-        }
-
-        function applyRecentDeletionTombstonesToRouteGeojson(geojson, tombstoneSet) {
-    try {
-        if (!geojson || !geojson.features || !Array.isArray(geojson.features)) return geojson;
-        const set = tombstoneSet || getRecentlyDeletedAddressSet();
-        if (!set || set.size === 0) return geojson;
-
-        const before = geojson.features.length;
-
-        const filtered = geojson.features.filter(f => {
-            const p = f && f.properties ? f.properties : {};
-
-            // Coleta o máximo de representações de endereço para comparação robusta
-            const addrCandidates = [];
-
-            const direct =
-                p.address ||
-                p.destination_address ||
-                p.destinationAddress ||
-                p.matchedClientAddress ||
-                p.clientAddress ||
-                '';
-
-            if (direct) addrCandidates.push(direct);
-
-            // allAddresses pode ser string "a|||b|||c" ou array
-            if (p.allAddresses) {
-                const arr = Array.isArray(p.allAddresses)
-                    ? p.allAddresses
-                    : String(p.allAddresses).split('|||');
-                for (const a of arr) {
-                    if (a) addrCandidates.push(a);
-                }
-            }
-
-            // addressSequencePairs pode conter vários endereços
-            if (p.addressSequencePairs) {
-                try {
-                    const pairs = typeof p.addressSequencePairs === 'string'
-                        ? JSON.parse(p.addressSequencePairs)
-                        : p.addressSequencePairs;
-                    if (Array.isArray(pairs)) {
-                        for (const pair of pairs) {
-                            if (pair && pair.address) addrCandidates.push(pair.address);
-                        }
-                    }
-                } catch (_) {}
-            }
-
-            // Se qualquer candidato bater com o set, filtra fora (não renderiza)
-            for (const a of addrCandidates) {
-                const key = normalizeAddressForComparison(a || '');
-                if (key && set.has(key)) return false;
-            }
-
-            return true;
-        });
-
-        if (filtered.length === before) return geojson;
-
-        const clone = JSON.parse(JSON.stringify(geojson));
-        clone.features = filtered;
-        return clone;
-    } catch (e) {
-        return geojson;
-    }
-}
-
-// Constrói um Set de endereços a filtrar durante sync (evita "piscada" ao voltar online)
-async function getPendingDeleteAddressSet() {
-    try {
-        const set = new Set();
-        if (!offlineDB) return set;
-        const pending = await getAllFromOfflineDB('pendingDeletes');
-        if (pending && pending.length) {
-            for (const item of pending) {
-                const addr = item && (item.clientAddress || item.client_address || item.address);
-                const k = normalizeAddressForComparison(addr || '');
-                if (k) set.add(k);
-            }
-        }
-        return set;
-    } catch (_) {
-        return new Set();
-    }
-}
-
-async function buildDeletionFilterSet(extraAddresses = []) {
-    const out = new Set();
-
-    // Tombstones locais (rápidos, localStorage)
-    try {
-        const tombstones = getRecentlyDeletedAddressSet();
-        if (tombstones && tombstones.size) {
-            tombstones.forEach(k => out.add(k));
-        }
-    } catch (_) {}
-
-    // Deletes pendentes (persistem até sincronizar)
-    try {
-        const pending = await getPendingDeleteAddressSet();
-        if (pending && pending.size) {
-            pending.forEach(k => out.add(k));
-        }
-    } catch (_) {}
-
-    // Extras fornecidos (ex: deletados já sincronizados nesta rodada)
-    try {
-        if (Array.isArray(extraAddresses)) {
-            extraAddresses.forEach(a => {
-                const k = normalizeAddressForComparison(a || '');
-                if (k) out.add(k);
-            });
-        }
-    } catch (_) {}
-
-    return out;
-}
-        }
-
         // ============================================
         // FAST CLIENT LOOKUP - Cache-first com timeout
         // ============================================
@@ -16314,71 +16186,6 @@ async function buildDeletionFilterSet(extraAddresses = []) {
                 }
             }
         }
-
-// Função para ADICIONAR de volta um endereço na lista manual após exclusão de cliente
-async function addAddressBackToManualList(address) {
-    try {
-        if (!address) return;
-        if (!planilhaAddressData) planilhaAddressData = [];
-
-        const normalizedAddress = normalizeAddressForComparison(address);
-        if (!normalizedAddress) return;
-
-        // Se já está na lista, não duplica
-        const exists = planilhaAddressData.some(item => {
-            const a = item && (item.destination_address || item.address);
-            return normalizeAddressForComparison(a || '') === normalizedAddress;
-        });
-        if (exists) return;
-
-        // Busca dados originais da planilha no cache (para restaurar sequence, bairro, city, etc.)
-        let cachedPlanilha = [];
-        try {
-            cachedPlanilha = await getAllFromOfflineDB('cachedPlanilha');
-        } catch (_) {
-            cachedPlanilha = [];
-        }
-
-        let match = null;
-
-        if (cachedPlanilha && cachedPlanilha.length) {
-            // Preferência: match exato pelo destination_address normalizado
-            match = cachedPlanilha.find(it => {
-                const a = it && it.destination_address;
-                return normalizeAddressForComparison(a || '') === normalizedAddress;
-            });
-
-            // Fallback: match por componentes (rua + número)
-            if (!match) {
-                const comp = extractAddressComponentsSimple(address);
-                if (comp.primary && comp.number) {
-                    match = cachedPlanilha.find(it => {
-                        const a = it && it.destination_address;
-                        if (!a) return false;
-                        const itComp = extractAddressComponentsSimple(a);
-                        return itComp.primary === comp.primary && itComp.number === comp.number;
-                    });
-                }
-            }
-        }
-
-        // Se não achou na planilha, adiciona um item mínimo (a UI ainda funciona)
-        const itemToAdd = match ? { ...match } : { destination_address: address };
-
-        planilhaAddressData.push(itemToAdd);
-
-        // Mantém ordenação por sequence quando disponível
-        planilhaAddressData.sort((a, b) => {
-            const sa = Number(a && a.sequence) || 0;
-            const sb = Number(b && b.sequence) || 0;
-            return sa - sb;
-        });
-
-        renderAddressList(planilhaAddressData);
-    } catch (e) {
-        // Silencioso: não quebra o fluxo do usuário
-    }
-}
 
         // Exit adjust mode
         function exitAdjustMode() {
