@@ -6782,8 +6782,12 @@
                                 // Merge: combina alterações locais com remotas
                                 const mergedGeojson = mergeRouteMarkersGeojson(cachedMarkers.geojson, supabaseMarkers.geojson);
 
+                                // Anti-flicker: remove marcadores excluídos recentemente antes de salvar/renderizar
+                                const tombstones = getRecentlyDeletedAddressSet();
+                                const mergedGeojsonFiltered = applyRecentDeletionTombstonesToRouteGeojson(mergedGeojson, tombstones);
+
                                 // Recalcula stats
-                                const features = mergedGeojson.features;
+                                const features = mergedGeojsonFiltered.features;
                                 const mergedStats = {
                                     total: features.filter(f => f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
                                     registered: features.filter(f => f.properties.isRegistered && f.properties.deliveryStatus !== 'delivered' && f.properties.deliveryStatus !== 'not_delivered').length,
@@ -6793,11 +6797,11 @@
                                 };
 
                                 // Salva o merge no Supabase e local
-                                await _doSaveRouteMarkersToSupabase(mergedGeojson, mergedStats);
-                                await saveRouteMarkersToCache(mergedGeojson, mergedStats, true);
+                                await _doSaveRouteMarkersToSupabase(mergedGeojsonFiltered, mergedStats);
+                                await saveRouteMarkersToCache(mergedGeojsonFiltered, mergedStats, true);
 
                                 // Atualiza o mapa
-                                map.getSource('route-stops').setData(mergedGeojson);
+                                map.getSource('route-stops').setData(mergedGeojsonFiltered);
                                 updateFixedStatsPanel(mergedStats);
                                 console.log('✅ Marcadores sincronizados (merge offline/online)');
                             } else if (cachedMarkers && cachedMarkers.geojson) {
@@ -6805,8 +6809,10 @@
                                 await _doSaveRouteMarkersToSupabase(cachedMarkers.geojson, cachedMarkers.stats);
                             } else if (supabaseMarkers && supabaseMarkers.geojson) {
                                 // Só tem remoto, baixa para local
-                                await saveRouteMarkersToCache(supabaseMarkers.geojson, supabaseMarkers.stats, true);
-                                map.getSource('route-stops').setData(supabaseMarkers.geojson);
+                                const tombstonesOnlyRemote = getRecentlyDeletedAddressSet();
+                                const remoteFiltered = applyRecentDeletionTombstonesToRouteGeojson(supabaseMarkers.geojson, tombstonesOnlyRemote);
+                                await saveRouteMarkersToCache(remoteFiltered, supabaseMarkers.stats, true);
+                                map.getSource('route-stops').setData(remoteFiltered);
                                 updateFixedStatsPanel(supabaseMarkers.stats);
                             }
                             await longYield();
@@ -9180,6 +9186,11 @@
         // Delete cliente - com ErrorHandler
         async function deleteCliente(id, address) {
             console.log('🗑️ deleteCliente:', { id, address, isOnline });
+            // Anti-flicker: marca este endereço como excluído recentemente
+            // para que o merge online não o re-renderize por alguns instantes.
+            if (typeof rememberRecentlyDeletedAddress === 'function') {
+                rememberRecentlyDeletedAddress(address);
+            }
             
             try {
                 // Verifica se é um cliente criado offline (ID temporário: "new_xxx" ou "pending_xxx")
@@ -14562,6 +14573,76 @@
                 .replace(/[.,;:\-\/\\()]/g, ' ') // Substitui pontuação por espaço
                 .replace(/\s+/g, ' ') // Múltiplos espaços para um único
                 .trim();
+        }
+
+        // ==========================================================
+        // RECENT DELETION TOMBSTONES (anti-flicker during online sync)
+        // ==========================================================
+        // Quando o usuário exclui um cadastro offline, o Supabase ainda pode conter
+        // o marcador antigo por alguns segundos/minutos. Durante o merge (online),
+        // isso pode causar uma "piscada" (marker reaparece e some).
+        // Solução: manter um conjunto curto de "tombstones" (endereços excluídos recentemente)
+        // e aplicar filtro antes de renderizar/salvar o GeoJSON de rota.
+        const RECENT_DELETE_TOMBSTONE_KEY = 'recentlyDeletedRouteMarkers';
+        const RECENT_DELETE_TTL_MS = 2 * 60 * 1000; // 2 minutos
+        const RECENT_DELETE_MAX = 150;
+
+        function rememberRecentlyDeletedAddress(address) {
+            try {
+                if (!address) return;
+                const k = normalizeAddressForComparison(address);
+                if (!k) return;
+
+                const now = Date.now();
+                let list = [];
+                try { list = JSON.parse(localStorage.getItem(RECENT_DELETE_TOMBSTONE_KEY) || '[]'); } catch { list = []; }
+
+                // Remove expirados e duplicados
+                list = (Array.isArray(list) ? list : [])
+                    .filter(it => it && it.k && it.t && (now - it.t) <= RECENT_DELETE_TTL_MS && it.k !== k);
+
+                list.unshift({ k, t: now });
+                if (list.length > RECENT_DELETE_MAX) list = list.slice(0, RECENT_DELETE_MAX);
+
+                localStorage.setItem(RECENT_DELETE_TOMBSTONE_KEY, JSON.stringify(list));
+            } catch (e) {
+                // Silencioso
+            }
+        }
+
+        function getRecentlyDeletedAddressSet() {
+            const now = Date.now();
+            let list = [];
+            try { list = JSON.parse(localStorage.getItem(RECENT_DELETE_TOMBSTONE_KEY) || '[]'); } catch { list = []; }
+            const valid = (Array.isArray(list) ? list : []).filter(it => it && it.k && it.t && (now - it.t) <= RECENT_DELETE_TTL_MS);
+            // Persist pruning (evita crescimento)
+            try { localStorage.setItem(RECENT_DELETE_TOMBSTONE_KEY, JSON.stringify(valid)); } catch {}
+            return new Set(valid.map(it => it.k));
+        }
+
+        function applyRecentDeletionTombstonesToRouteGeojson(geojson, tombstoneSet) {
+            try {
+                if (!geojson || !geojson.features || !Array.isArray(geojson.features)) return geojson;
+                const set = tombstoneSet || getRecentlyDeletedAddressSet();
+                if (!set || set.size === 0) return geojson;
+
+                const before = geojson.features.length;
+
+                const filtered = geojson.features.filter(f => {
+                    const p = f && f.properties ? f.properties : {};
+                    const addr = p.address || p.destination_address || p.matchedClientAddress || p.clientAddress;
+                    const key = normalizeAddressForComparison(addr || '');
+                    return key ? !set.has(key) : true;
+                });
+
+                if (filtered.length === before) return geojson;
+
+                const clone = JSON.parse(JSON.stringify(geojson));
+                clone.features = filtered;
+                return clone;
+            } catch (e) {
+                return geojson;
+            }
         }
 
         // ============================================
