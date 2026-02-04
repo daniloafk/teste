@@ -6270,10 +6270,14 @@
                                 features: mergedFeatures
                             };
 
-                            source.setData(mergedGeojson);
+                            // Anti-piscada: filtra endereços deletados (tombstones + pendingDeletes) ANTES de renderizar
+                            const deletionFilterSet0 = await buildDeletionFilterSet();
+                            const mergedGeojsonFiltered0 = applyRecentDeletionTombstonesToRouteGeojson(mergedGeojson, deletionFilterSet0);
+
+                            source.setData(mergedGeojsonFiltered0);
 
                             // Salva no cache local (sem enviar para Supabase ainda)
-                            await saveRouteMarkersToCache(mergedGeojson, supabaseMarkers.stats, true);
+                            await saveRouteMarkersToCache(mergedGeojsonFiltered0, supabaseMarkers.stats, true);
 
                             // Atualiza versão local
                             if (supabaseMarkers.version) {
@@ -6783,8 +6787,8 @@
                                 const mergedGeojson = mergeRouteMarkersGeojson(cachedMarkers.geojson, supabaseMarkers.geojson);
 
                                 // Anti-flicker: remove marcadores excluídos recentemente antes de salvar/renderizar
-                                const tombstones = getRecentlyDeletedAddressSet();
-                                const mergedGeojsonFiltered = applyRecentDeletionTombstonesToRouteGeojson(mergedGeojson, tombstones);
+                                const deletionFilterSet = await buildDeletionFilterSet((typeof syncResult !== 'undefined' && syncResult && syncResult.syncedDeletedAddresses) ? syncResult.syncedDeletedAddresses : []);
+                                const mergedGeojsonFiltered = applyRecentDeletionTombstonesToRouteGeojson(mergedGeojson, deletionFilterSet);
 
                                 // Recalcula stats
                                 const features = mergedGeojsonFiltered.features;
@@ -6809,8 +6813,8 @@
                                 await _doSaveRouteMarkersToSupabase(cachedMarkers.geojson, cachedMarkers.stats);
                             } else if (supabaseMarkers && supabaseMarkers.geojson) {
                                 // Só tem remoto, baixa para local
-                                const tombstonesOnlyRemote = getRecentlyDeletedAddressSet();
-                                const remoteFiltered = applyRecentDeletionTombstonesToRouteGeojson(supabaseMarkers.geojson, tombstonesOnlyRemote);
+                                const deletionFilterSetRemote = await buildDeletionFilterSet((typeof syncResult !== 'undefined' && syncResult && syncResult.syncedDeletedAddresses) ? syncResult.syncedDeletedAddresses : []);
+                                const remoteFiltered = applyRecentDeletionTombstonesToRouteGeojson(supabaseMarkers.geojson, deletionFilterSetRemote);
                                 await saveRouteMarkersToCache(remoteFiltered, supabaseMarkers.stats, true);
                                 map.getSource('route-stops').setData(remoteFiltered);
                                 updateFixedStatsPanel(supabaseMarkers.stats);
@@ -9908,12 +9912,18 @@
                 if (removedClient && removedClient.address && hasRouteSource) {
                     console.log('🔄 Chamando revertRouteMarkerAfterClientDeletion...');
                     await revertRouteMarkerAfterClientDeletion(removedClient);
+                        // Após excluir, o endereço deve voltar a aparecer na lista manual de cadastro
+                        await addAddressBackToManualList(removedClient.address);
                 } else {
                     console.log('⚠️ Não foi possível reverter marcador:', {
                         removedClient,
                         hasRouteSource
                     });
                 }
+                    // Mesmo sem reverter o marcador, devolve o endereço para a lista manual
+                    if (removedClient && removedClient.address) {
+                        await addAddressBackToManualList(removedClient.address);
+                    }
 
             } catch (err) {
                 // Erro na remoção incremental - fallback para reload completo
@@ -14621,28 +14631,122 @@
         }
 
         function applyRecentDeletionTombstonesToRouteGeojson(geojson, tombstoneSet) {
-            try {
-                if (!geojson || !geojson.features || !Array.isArray(geojson.features)) return geojson;
-                const set = tombstoneSet || getRecentlyDeletedAddressSet();
-                if (!set || set.size === 0) return geojson;
+    try {
+        if (!geojson || !geojson.features || !Array.isArray(geojson.features)) return geojson;
+        const set = tombstoneSet || getRecentlyDeletedAddressSet();
+        if (!set || set.size === 0) return geojson;
 
-                const before = geojson.features.length;
+        const before = geojson.features.length;
 
-                const filtered = geojson.features.filter(f => {
-                    const p = f && f.properties ? f.properties : {};
-                    const addr = p.address || p.destination_address || p.matchedClientAddress || p.clientAddress;
-                    const key = normalizeAddressForComparison(addr || '');
-                    return key ? !set.has(key) : true;
-                });
+        const filtered = geojson.features.filter(f => {
+            const p = f && f.properties ? f.properties : {};
 
-                if (filtered.length === before) return geojson;
+            // Coleta o máximo de representações de endereço para comparação robusta
+            const addrCandidates = [];
 
-                const clone = JSON.parse(JSON.stringify(geojson));
-                clone.features = filtered;
-                return clone;
-            } catch (e) {
-                return geojson;
+            const direct =
+                p.address ||
+                p.destination_address ||
+                p.destinationAddress ||
+                p.matchedClientAddress ||
+                p.clientAddress ||
+                '';
+
+            if (direct) addrCandidates.push(direct);
+
+            // allAddresses pode ser string "a|||b|||c" ou array
+            if (p.allAddresses) {
+                const arr = Array.isArray(p.allAddresses)
+                    ? p.allAddresses
+                    : String(p.allAddresses).split('|||');
+                for (const a of arr) {
+                    if (a) addrCandidates.push(a);
+                }
             }
+
+            // addressSequencePairs pode conter vários endereços
+            if (p.addressSequencePairs) {
+                try {
+                    const pairs = typeof p.addressSequencePairs === 'string'
+                        ? JSON.parse(p.addressSequencePairs)
+                        : p.addressSequencePairs;
+                    if (Array.isArray(pairs)) {
+                        for (const pair of pairs) {
+                            if (pair && pair.address) addrCandidates.push(pair.address);
+                        }
+                    }
+                } catch (_) {}
+            }
+
+            // Se qualquer candidato bater com o set, filtra fora (não renderiza)
+            for (const a of addrCandidates) {
+                const key = normalizeAddressForComparison(a || '');
+                if (key && set.has(key)) return false;
+            }
+
+            return true;
+        });
+
+        if (filtered.length === before) return geojson;
+
+        const clone = JSON.parse(JSON.stringify(geojson));
+        clone.features = filtered;
+        return clone;
+    } catch (e) {
+        return geojson;
+    }
+}
+
+// Constrói um Set de endereços a filtrar durante sync (evita "piscada" ao voltar online)
+async function getPendingDeleteAddressSet() {
+    try {
+        const set = new Set();
+        if (!offlineDB) return set;
+        const pending = await getAllFromOfflineDB('pendingDeletes');
+        if (pending && pending.length) {
+            for (const item of pending) {
+                const addr = item && (item.clientAddress || item.client_address || item.address);
+                const k = normalizeAddressForComparison(addr || '');
+                if (k) set.add(k);
+            }
+        }
+        return set;
+    } catch (_) {
+        return new Set();
+    }
+}
+
+async function buildDeletionFilterSet(extraAddresses = []) {
+    const out = new Set();
+
+    // Tombstones locais (rápidos, localStorage)
+    try {
+        const tombstones = getRecentlyDeletedAddressSet();
+        if (tombstones && tombstones.size) {
+            tombstones.forEach(k => out.add(k));
+        }
+    } catch (_) {}
+
+    // Deletes pendentes (persistem até sincronizar)
+    try {
+        const pending = await getPendingDeleteAddressSet();
+        if (pending && pending.size) {
+            pending.forEach(k => out.add(k));
+        }
+    } catch (_) {}
+
+    // Extras fornecidos (ex: deletados já sincronizados nesta rodada)
+    try {
+        if (Array.isArray(extraAddresses)) {
+            extraAddresses.forEach(a => {
+                const k = normalizeAddressForComparison(a || '');
+                if (k) out.add(k);
+            });
+        }
+    } catch (_) {}
+
+    return out;
+}
         }
 
         // ============================================
@@ -16210,6 +16314,71 @@
                 }
             }
         }
+
+// Função para ADICIONAR de volta um endereço na lista manual após exclusão de cliente
+async function addAddressBackToManualList(address) {
+    try {
+        if (!address) return;
+        if (!planilhaAddressData) planilhaAddressData = [];
+
+        const normalizedAddress = normalizeAddressForComparison(address);
+        if (!normalizedAddress) return;
+
+        // Se já está na lista, não duplica
+        const exists = planilhaAddressData.some(item => {
+            const a = item && (item.destination_address || item.address);
+            return normalizeAddressForComparison(a || '') === normalizedAddress;
+        });
+        if (exists) return;
+
+        // Busca dados originais da planilha no cache (para restaurar sequence, bairro, city, etc.)
+        let cachedPlanilha = [];
+        try {
+            cachedPlanilha = await getAllFromOfflineDB('cachedPlanilha');
+        } catch (_) {
+            cachedPlanilha = [];
+        }
+
+        let match = null;
+
+        if (cachedPlanilha && cachedPlanilha.length) {
+            // Preferência: match exato pelo destination_address normalizado
+            match = cachedPlanilha.find(it => {
+                const a = it && it.destination_address;
+                return normalizeAddressForComparison(a || '') === normalizedAddress;
+            });
+
+            // Fallback: match por componentes (rua + número)
+            if (!match) {
+                const comp = extractAddressComponentsSimple(address);
+                if (comp.primary && comp.number) {
+                    match = cachedPlanilha.find(it => {
+                        const a = it && it.destination_address;
+                        if (!a) return false;
+                        const itComp = extractAddressComponentsSimple(a);
+                        return itComp.primary === comp.primary && itComp.number === comp.number;
+                    });
+                }
+            }
+        }
+
+        // Se não achou na planilha, adiciona um item mínimo (a UI ainda funciona)
+        const itemToAdd = match ? { ...match } : { destination_address: address };
+
+        planilhaAddressData.push(itemToAdd);
+
+        // Mantém ordenação por sequence quando disponível
+        planilhaAddressData.sort((a, b) => {
+            const sa = Number(a && a.sequence) || 0;
+            const sb = Number(b && b.sequence) || 0;
+            return sa - sb;
+        });
+
+        renderAddressList(planilhaAddressData);
+    } catch (e) {
+        // Silencioso: não quebra o fluxo do usuário
+    }
+}
 
         // Exit adjust mode
         function exitAdjustMode() {
