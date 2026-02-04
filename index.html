@@ -14761,60 +14761,6 @@ try {
                 .trim();
         }
 
-
-        // Extrai o identificador "útil" do QR para comparação offline/online
-        // Aceita QR contendo URL, querystring, prefixos, etc.
-        function extractQrToken(raw) {
-            if (raw === null || raw === undefined) return '';
-            const s = String(raw).trim();
-
-            // Tenta pegar parâmetros comuns em URLs (ex: ...?spx_tn=123 ou ...?tn=123)
-            try {
-                if (s.includes('://') || s.includes('?')) {
-                    const u = new URL(s);
-                    const cand = u.searchParams.get('spx_tn') || u.searchParams.get('tn') || u.searchParams.get('id');
-                    if (cand) return String(cand).trim();
-                }
-            } catch (e) {}
-
-            // Extrai o maior bloco de dígitos (caso QR venha com texto misturado)
-            const digitMatches = s.match(/\d{4,}/g);
-            if (digitMatches && digitMatches.length) {
-                digitMatches.sort((a,b)=>b.length-a.length);
-                return digitMatches[0];
-            }
-
-            // Fallback: mantém somente caracteres alfanuméricos e alguns separadores
-            return s.replace(/[^0-9a-zA-Z_-]/g, '').trim();
-        }
-
-        // Normaliza IDs para comparação (remove espaços/pontuação e padroniza)
-        function normalizeQrId(id) {
-            if (id === null || id === undefined) return '';
-            return String(id).trim().replace(/[^0-9a-zA-Z_-]/g, '');
-        }
-
-        // Gera variantes de token para casar IDs que podem vir como string/numero (ex: "001234" vs 1234)
-        function getQrTokenVariants(rawToken) {
-            const raw = (rawToken === null || rawToken === undefined) ? '' : String(rawToken).trim();
-            const norm = normalizeQrId(raw);
-            const variants = new Set();
-            if (raw) variants.add(raw);
-            if (norm) variants.add(norm);
-
-            // Remove zeros à esquerda (para casos de ID numérico)
-            const noZeros = norm.replace(/^0+/, '');
-            if (noZeros) variants.add(noZeros);
-
-            // Se for numérico, adiciona a versão number-string (sem casas decimais)
-            if (/^\d+$/.test(norm)) {
-                const n = Number(norm);
-                if (Number.isFinite(n)) variants.add(String(n));
-            }
-            return Array.from(variants).filter(Boolean);
-        }
-
-
         // ============================================
         // FAST CLIENT LOOKUP - Cache-first com timeout
         // ============================================
@@ -15118,24 +15064,13 @@ try {
                             // - matchType === 'exact' -> JÁ CADASTRADO, não mostra
                             // - matchType === 'similarity' -> match por similaridade, MOSTRA
                             // - matchType === null -> não cadastrado, MOSTRA
-                            // Associa IDs (spx_tn) individuais ao endereço quando disponíveis
-                            // Isso melhora o match do QR offline (IDs alinhados com allAddresses/sequences)
-                            try {
-                                const idsArr = props.ids ? String(props.ids).split(',').map(s => s.trim()).filter(Boolean) : [];
-                                addressPairs = addressPairs.map((pair, pairIdx) => {
-                                    const idForPair = pair.id || idsArr[pairIdx] || null;
-                                    return Object.assign({ _idx: pairIdx, id: idForPair }, pair);
-                                });
-                            } catch (e) {}
-
                             const unregisteredPairs = addressPairs.filter(pair =>
                                 pair.matchType !== 'exact'
                             );
 
                             // Retorna um item para cada endereço não cadastrado do grupo
                             return unregisteredPairs.map(pair => ({
-                                id: pair.id || (props.ids ? String(props.ids).split(',')[0].trim() : props.id),
-                                spx_tn: pair.id || null,
+                                id: props.ids ? props.ids.split(',')[0] : props.id,
                                 sequence: pair.sequence || 0,
                                 destination_address: pair.address || '',
                                 bairro: pair.bairro || props.bairro || '',
@@ -15414,66 +15349,45 @@ try {
         }
 
         function startScanning() {
-            if (!qrStream || !qrVideo || !qrCanvas || !qrCanvasContext) return;
-
-            // Usa tanto window.jsQR quanto jsQR (varia por ambiente)
-            const qrDecoder = (typeof window !== 'undefined' && window.jsQR) ? window.jsQR : (typeof jsQR !== 'undefined' ? jsQR : null);
+            if (!qrStream) return;
 
             function tick() {
                 if (!qrModal.classList.contains('active')) return;
 
-                try {
-                    // Aguarda vídeo pronto
-                    if (qrVideo.readyState < qrVideo.HAVE_ENOUGH_DATA || !qrVideo.videoWidth || !qrVideo.videoHeight) {
-                        qrAnimationFrame = requestAnimationFrame(tick);
-                        return;
-                    }
+                if (qrVideo.readyState === qrVideo.HAVE_ENOUGH_DATA) {
+                    // Solução 1: Reduzir resolução de processamento (640x480)
+                    const processWidth = 640;
+                    const processHeight = Math.floor((qrVideo.videoHeight / qrVideo.videoWidth) * processWidth);
 
-                    if (typeof qrDecoder !== 'function') {
-                        qrStatusText.textContent = 'Carregando leitor de QR...';
-                        qrAnimationFrame = requestAnimationFrame(tick);
-                        return;
-                    }
+                    qrCanvas.width = processWidth;
+                    qrCanvas.height = processHeight;
 
-                    // Renderiza frame em tamanho reduzido (melhor desempenho, sem perder leitura)
-                    const targetW = 640;
-                    const w = Math.max(320, Math.min(targetW, qrVideo.videoWidth));
-                    const h = Math.max(240, Math.floor((qrVideo.videoHeight / qrVideo.videoWidth) * w));
+                    qrCanvasContext.drawImage(qrVideo, 0, 0, processWidth, processHeight);
 
-                    if (h < 40) { // guarda contra altura inválida
-                        qrAnimationFrame = requestAnimationFrame(tick);
-                        return;
-                    }
+                    // Solução 2: Limitar área de leitura (ROI - Region of Interest)
+                    const scanSize = 300;
+                    const centerX = Math.floor(processWidth / 2);
+                    const centerY = Math.floor(processHeight / 2);
+                    const startX = Math.max(0, centerX - Math.floor(scanSize / 2));
+                    const startY = Math.max(0, centerY - Math.floor(scanSize / 2));
+                    const actualWidth = Math.min(scanSize, processWidth - startX);
+                    const actualHeight = Math.min(scanSize, processHeight - startY);
 
-                    qrCanvas.width = w;
-                    qrCanvas.height = h;
+                    // Captura apenas o centro da imagem
+                    const imageData = qrCanvasContext.getImageData(startX, startY, actualWidth, actualHeight);
 
-                    qrCanvasContext.drawImage(qrVideo, 0, 0, w, h);
-
-                    // 1) Tenta decodificar o frame inteiro (mais compatível; evita “parar de ler”)
-                    let imageData = qrCanvasContext.getImageData(0, 0, w, h);
+                    // Auto-detect dark environment and toggle torch
                     checkBrightnessAndToggleTorch(imageData);
 
-                    let code = qrDecoder(imageData.data, w, h, { inversionAttempts: 'attemptBoth' });
-
-                    // 2) Se falhar, tenta ROI central (melhora em QRs pequenos/ruído)
-                    if (!code || !code.data) {
-                        const roi = Math.max(260, Math.min(420, Math.min(w, h)));
-                        const sx = Math.floor((w - roi) / 2);
-                        const sy = Math.floor((h - roi) / 2);
-
-                        imageData = qrCanvasContext.getImageData(sx, sy, roi, roi);
-                        checkBrightnessAndToggleTorch(imageData);
-
-                        code = qrDecoder(imageData.data, roi, roi, { inversionAttempts: 'attemptBoth' });
-                    }
+                    // Solução 3: Permitir leitura invertida (attemptBoth)
+                    const code = jsQR(imageData.data, actualWidth, actualHeight, {
+                        inversionAttempts: 'attemptBoth'
+                    });
 
                     if (code && code.data) {
                         searchAndShowResult(code.data);
                         return;
                     }
-                } catch (e) {
-                    // Não trava o loop de leitura por erro de canvas/video
                 }
 
                 qrAnimationFrame = requestAnimationFrame(tick);
@@ -15487,134 +15401,290 @@ try {
 
         // Search in database and show result with address
         // OTIMIZADO: Cache-first - busca no cache local primeiro (instantâneo)
-        // Search in database and show result with address
-// RESTAURADO (compatível): comparação direta do código lido com spx_tn da planilha
-async function searchAndShowResult(qrData) {
-    // Show loading
-    qrLoading.classList.add('active');
-    document.querySelector('.qr-loading-text').textContent = 'Buscando endereço...';
+        async function searchAndShowResult(qrData) {
+            // Show loading
+            qrLoading.classList.add('active');
+            document.querySelector('.qr-loading-text').textContent = 'Buscando endereço...';
 
-    const qrToken = extractQrToken(qrData); // mantém simples (token útil)
-    let foundRecord = null;
+            let foundRecord = null;
 
-    try {
-        // =========================
-        // 1) CACHE local primeiro
-        // =========================
-        try {
-            foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', qrToken);
-        } catch (e) {}
-
-        if (!foundRecord && /^\d+$/.test(String(qrToken))) {
-            // Alguns caches/planilhas podem ter spx_tn como número
             try {
-                foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', Number(qrToken));
-            } catch (e) {}
-        }
+                // ============================================
+                // CACHE-FIRST: Busca no cache LOCAL primeiro
+                // ============================================
 
-        // Fallback: varredura local (garante compatibilidade mesmo sem índice)
-        if (!foundRecord) {
-            try {
-                const cachedData = await getAllFromOfflineDB('cachedPlanilha');
-                if (cachedData && cachedData.length) {
-                    const tokenStr = String(qrToken).trim();
-                    const tokenNum = (/^\d+$/.test(tokenStr)) ? Number(tokenStr) : null;
+                // 1. Tenta buscar pelo índice spx_tn (mais rápido)
+                try {
+                    foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', qrData);
+                } catch (err) {}
 
-                    foundRecord = cachedData.find(item => {
-                        if (!item) return false;
-                        const spx = item.spx_tn;
-                        if (spx === null || spx === undefined) return false;
-
-                        // comparação direta
-                        if (String(spx).trim() === tokenStr) return true;
-
-                        // comparação numérica (quando aplicável)
-                        if (tokenNum !== null && Number.isFinite(tokenNum)) {
-                            const spxNum = (typeof spx === 'number') ? spx : (/^\d+$/.test(String(spx).trim()) ? Number(String(spx).trim()) : NaN);
-                            if (Number.isFinite(spxNum) && spxNum === tokenNum) return true;
+                // 2. Se não encontrou, busca manual no cachedPlanilha
+                if (!foundRecord) {
+                    try {
+                        const cachedData = await getAllFromOfflineDB('cachedPlanilha');
+                        if (cachedData && cachedData.length > 0) {
+                            foundRecord = cachedData.find(item =>
+                                item.spx_tn && item.spx_tn.toString() === qrData.toString()
+                            );
                         }
-                        return false;
+                    } catch (err) {}
+                }
+
+                // 3. Tenta também em pendingPlanilha
+                if (!foundRecord) {
+                    try {
+                        const offlineData = await getAllFromOfflineDB('pendingPlanilha');
+                        if (offlineData && offlineData.length > 0) {
+                            foundRecord = offlineData.find(item =>
+                                item.spx_tn && item.spx_tn.toString() === qrData.toString()
+                            );
+                        }
+                    } catch (err) {}
+                }
+
+                // 4. Fallback: Busca em cachedRouteMarkers (dados podem estar só lá)
+                if (!foundRecord) {
+                    try {
+                        const cachedMarkers = await getCachedRouteMarkers();
+                        if (cachedMarkers && cachedMarkers.geojson && cachedMarkers.geojson.features) {
+                            // Procura pelo spx_tn nos ids dos marcadores
+                            for (const feature of cachedMarkers.geojson.features) {
+                                const props = feature.properties;
+                                const ids = props.ids ? props.ids.split(',') : [];
+
+                                // Verifica se o QR code corresponde a algum ID
+                                if (ids.some(id => id.trim() === qrData.toString())) {
+                                    // Extrai dados do marcador
+                                    const addresses = props.allAddresses ?
+                                        (typeof props.allAddresses === 'string' ? props.allAddresses.split('|||') : props.allAddresses) :
+                                        [props.address];
+                                    const sequences = props.sequences ?
+                                        (typeof props.sequences === 'string' ? props.sequences.split(',').map(s => parseInt(s.trim())) : props.sequences) :
+                                        [];
+
+                                    // Encontra o índice correspondente ao ID
+                                    const idIndex = ids.findIndex(id => id.trim() === qrData.toString());
+
+                                    foundRecord = {
+                                        id: qrData,
+                                        spx_tn: qrData,
+                                        destination_address: addresses[idIndex] || addresses[0] || props.address,
+                                        sequence: sequences[idIndex] || sequences[0],
+                                        bairro: props.bairro || '',
+                                        city: props.city || '',
+                                        zipcode: props.zipcode || '',
+                                        latitude: feature.geometry.coordinates[1],
+                                        longitude: feature.geometry.coordinates[0]
+                                    };
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (err) {}
+                }
+
+                // ============================================
+                // Se encontrou no cache, processa imediatamente
+                // ============================================
+                if (foundRecord) {
+                    playQrBeep(); // Som de confirmação de leitura
+                    turnOffTorch(); // Desliga lanterna após leitura
+                    qrLoading.classList.remove('active');
+                    currentRecord = foundRecord;
+                    const addressToCheck = foundRecord.destination_address;
+
+                    // Usa APENAS cache local para verificar se já está cadastrado
+                    const existingClient = await findExistingClientFast(addressToCheck, {
+                        skipOnline: true  // Pula busca online - resposta instantânea
                     });
-                }
-            } catch (e) {}
-        }
 
-        // =========================
-        // 2) Se online, Supabase
-        // =========================
-        if (!foundRecord && isOnline) {
-            try {
-                const tokenStr = String(qrToken).trim();
-                let resp = await db
-                    .from('planilha')
-                    .select('*')
-                    .eq('spx_tn', tokenStr)
-                    .limit(1);
-
-                if (!resp.error && resp.data && resp.data.length) {
-                    foundRecord = resp.data[0];
-                } else if (/^\d+$/.test(tokenStr)) {
-                    // tenta como número (caso a coluna esteja tipada/gravada como numeric)
-                    resp = await db
-                        .from('planilha')
-                        .select('*')
-                        .eq('spx_tn', Number(tokenStr))
-                        .limit(1);
-
-                    if (!resp.error && resp.data && resp.data.length) {
-                        foundRecord = resp.data[0];
+                    if (existingClient) {
+                        closeQrScanner();
+                        showAddressExistsModal(addressToCheck, existingClient);
+                    } else {
+                        enterAdjustMode();
                     }
+                    return;
                 }
-            } catch (e) {}
+
+                // ============================================
+                // Se não encontrou no cache e está online, tenta Supabase
+                // ============================================
+                if (isOnline && !foundRecord) {
+                    try {
+                        const { data, error } = await db
+                            .from('planilha')
+                            .select('*')
+                            .eq('spx_tn', qrData)
+                            .limit(1);
+
+                        if (!error && data && data.length > 0) {
+                            foundRecord = data[0];
+                        }
+                    } catch (supabaseError) {}
+                }
+
+                qrLoading.classList.remove('active');
+
+                if (foundRecord) {
+                    playQrBeep(); // Som de confirmação de leitura
+                    turnOffTorch(); // Desliga lanterna após leitura
+                    currentRecord = foundRecord;
+                    const addressToCheck = foundRecord.destination_address;
+
+                    // Usa cache local para verificar (skipOnline)
+                    const existingClient = await findExistingClientFast(addressToCheck, {
+                        skipOnline: true
+                    });
+
+                    if (existingClient) {
+                        closeQrScanner();
+                        showAddressExistsModal(addressToCheck, existingClient);
+                    } else {
+                        enterAdjustMode();
+                    }
+                } else {
+                    // Code not found
+                    currentRecord = null;
+                    qrStatusText.textContent = 'Código não encontrado';
+                    setTimeout(() => {
+                        if (qrModal.classList.contains('active')) {
+                            qrStatusText.textContent = 'Aponte para o QR Code';
+                            startScanning();
+                        }
+                    }, 2000);
+                }
+
+            } catch (error) {
+                qrLoading.classList.remove('active');
+                currentRecord = null;
+                qrStatusText.textContent = 'Erro na busca';
+                setTimeout(() => {
+                    if (qrModal.classList.contains('active')) {
+                        qrStatusText.textContent = 'Aponte para o QR Code';
+                        startScanning();
+                    }
+                }, 2000);
+            }
         }
 
-        // =========================
-        // 3) Processa resultado
-        // =========================
-        if (foundRecord) {
-            playQrBeep();      // Som de confirmação
-            turnOffTorch();    // Desliga lanterna após leitura
-            qrLoading.classList.remove('active');
+        // ========================================
+        // Adjust Location & Save Functionality
+        // ========================================
+        const adjustModeBar = document.getElementById('adjustModeBar');
+        const adjustModeAddress = document.getElementById('adjustModeAddress');
+        const adjustModeCancel = document.getElementById('adjustModeCancel');
+        const adjustModeConfirm = document.getElementById('adjustModeConfirm');
 
-            currentRecord = foundRecord;
-            const addressToCheck = foundRecord.destination_address;
+        let adjustedCoordinates = null;
+        let isAdjustMode = false;
+        let isMapAnimating = false; // Flag para detectar se o mapa está em animação
+        const centerPin = document.getElementById('centerPin');
 
-            // Verifica se já existe cadastro (cache local = instantâneo; evita depender da rede)
-            const existingClient = await findExistingClientFast(addressToCheck, { skipOnline: true });
+        // Posiciona o pino no centro exato do container do mapa
+        function positionCenterPin() {
+            const mapContainer = document.getElementById('map');
+            if (!mapContainer || !centerPin) return;
 
-            if (existingClient) {
-                closeQrScanner();
-                showAddressExistsModal(addressToCheck, existingClient);
-            } else {
-                enterAdjustMode();
-            }
-            return;
+            const rect = mapContainer.getBoundingClientRect();
+            // Centro do container do mapa em relação ao próprio container
+            centerPin.style.left = (rect.width / 2) + 'px';
+            centerPin.style.top = (rect.height / 2) + 'px';
         }
 
-        // Não encontrado
-        qrLoading.classList.remove('active');
-        qrStatusText.textContent = 'Código não encontrado na planilha';
-        setTimeout(() => {
-            if (qrModal.classList.contains('active')) {
-                qrStatusText.textContent = 'Aponte para o QR Code';
-                startScanning();
+        // Atualiza posição do pino quando a janela redimensiona
+        window.addEventListener('resize', () => {
+            if (isAdjustMode) {
+                positionCenterPin();
             }
-        }, 650);
+        });
 
-    } catch (err) {
-        // Falha segura: não trava o app
-        qrLoading.classList.remove('active');
-        qrStatusText.textContent = 'Erro ao ler QR';
-        setTimeout(() => {
-            if (qrModal.classList.contains('active')) {
-                qrStatusText.textContent = 'Aponte para o QR Code';
-                startScanning();
+        // Address exists modal elements
+        const addressExistsModal = document.getElementById('addressExistsModal');
+        const addressExistsText = document.getElementById('addressExistsText');
+        const addressExistsCancel = document.getElementById('addressExistsCancel');
+        const addressExistsAdjust = document.getElementById('addressExistsAdjust');
+
+        // Old position tracking
+        let existingClientRecord = null;
+        let oldPositionMarker = null;
+
+        // Show address exists modal
+        function showAddressExistsModal(address, clientRecord) {
+            existingClientRecord = clientRecord;
+            addressExistsText.textContent = address;
+            document.getElementById('overlay').classList.add('active');
+            addressExistsModal.classList.add('active');
+        }
+
+        // Hide address exists modal
+        function hideAddressExistsModal() {
+            addressExistsModal.classList.remove('active');
+            document.getElementById('overlay').classList.remove('active');
+            existingClientRecord = null;
+        }
+
+        // Address exists modal event listeners
+        addressExistsCancel.addEventListener('click', () => {
+            hideAddressExistsModal();
+            // Resume QR scanning
+            qrStatusText.textContent = 'Aponte para o QR Code';
+            startScanning();
+        });
+
+        addressExistsAdjust.addEventListener('click', () => {
+            // Hide modal without resetting existingClientRecord
+            addressExistsModal.classList.remove('active');
+            document.getElementById('overlay').classList.remove('active');
+            // Enter adjust mode with old position marker (will use existingClientRecord)
+            enterAdjustModeWithOldPosition();
+        });
+
+        // Function to update coordinates from map center and display in real-time
+        // Called on 'move' event for immediate visual feedback
+        function updateAdjustedCoordinates() {
+            const center = map.getCenter();
+            adjustedCoordinates = {
+                latitude: center.lat,
+                longitude: center.lng
+            };
+        }
+
+        // THROTTLED: Versão otimizada para eventos 'move' frequentes
+        // Atualiza no máximo 30x por segundo (33ms) durante drag do mapa
+        const throttledUpdateCoordinates = throttle(updateAdjustedCoordinates, 33);
+
+        // Function to get current map center coordinates (for immediate capture)
+        // Esta função captura as coordenadas EXATAS no momento da chamada
+        // independente de qualquer evento ou animação
+        function getCurrentMapCenterCoordinates() {
+            const center = map.getCenter();
+            return {
+                latitude: center.lat,
+                longitude: center.lng
+            };
+        }
+
+        // Handler para detectar início de animação do mapa
+        function onMapMoveStart() {
+            if (isAdjustMode) {
+                isMapAnimating = true;
+                // Opcional: adicionar classe para feedback visual
+                adjustModeConfirm.classList.add('disabled');
             }
-        }, 650);
-    }
-}
+        }
 
+        // Handler para detectar fim de animação do mapa
+        function onMapMoveEnd() {
+            if (isAdjustMode) {
+                isMapAnimating = false;
+                adjustModeConfirm.classList.remove('disabled');
+                // Atualiza as coordenadas finais (sem throttle para captura exata)
+                updateAdjustedCoordinates();
+            }
+        }
 
+        // Enter adjust mode - show fixed center pin, start at GPS position
         async function enterAdjustMode() {
             closeQrScanner();
             isAdjustMode = true;
