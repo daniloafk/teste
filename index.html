@@ -10011,16 +10011,23 @@ try {
                         });
                         
                         // Pega o primeiro com coordenadas
-                        planilhaItem = allMatchingPlanilhaItems.find(item => 
-                            item.latitude && item.longitude
-                        ) || allMatchingPlanilhaItems[0];
+                        planilhaItem = allMatchingPlanilhaItems.find(item => {
+                            const lat = parseFloat(item.latitude);
+                            const lng = parseFloat(item.longitude);
+                            return Number.isFinite(lat) && Number.isFinite(lng);
+                        }) || allMatchingPlanilhaItems[0];
                     }
                 } catch (e) {
                     console.error('Erro ao buscar planilha:', e);
                 }
 
                 // Verificar se a planilha original tinha coordenadas
-                const hadOriginalCoords = planilhaItem && planilhaItem.latitude && planilhaItem.longitude;
+                const hadOriginalCoords = (() => {
+                    if (!planilhaItem) return false;
+                    const lat = parseFloat(planilhaItem.latitude);
+                    const lng = parseFloat(planilhaItem.longitude);
+                    return Number.isFinite(lat) && Number.isFinite(lng);
+                })();
                 
                 console.log('📋 Dados da planilha encontrados:', {
                     found: !!planilhaItem,
@@ -10094,7 +10101,7 @@ try {
                                         // Volta para similarity ou null baseado no previousMatchType
                                         return {
                                             ...pair,
-                                            matchType: props.previousMatchType || null
+                                            matchType: (props.previousMatchType === 'similarity') ? 'similarity' : null
                                         };
                                     }
                                     return pair;
@@ -10230,15 +10237,15 @@ try {
                                 ...feature,
                                 geometry: {
                                     type: 'Point',
-                                    coordinates: [planilhaItem.longitude, planilhaItem.latitude]
+                                    coordinates: [parseFloat(planilhaItem.longitude), parseFloat(planilhaItem.latitude)]
                                 },
                                 properties: {
                                     ...props,
                                     isRegistered: false,
                                     matchType: null,
                                     icon: newIconId,
-                                    latitude: planilhaItem.latitude,
-                                    longitude: planilhaItem.longitude,
+                                    latitude: parseFloat(planilhaItem.latitude),
+                                    longitude: parseFloat(planilhaItem.longitude),
                                     addressSequencePairs: updatedAddressSequencePairs,
                                     // Limpa status de entrega (cadastro foi excluído)
                                     deliveryStatus: 'pending',
