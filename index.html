@@ -14794,6 +14794,27 @@ try {
             return String(id).trim().replace(/[^0-9a-zA-Z_-]/g, '');
         }
 
+        // Gera variantes de token para casar IDs que podem vir como string/numero (ex: "001234" vs 1234)
+        function getQrTokenVariants(rawToken) {
+            const raw = (rawToken === null || rawToken === undefined) ? '' : String(rawToken).trim();
+            const norm = normalizeQrId(raw);
+            const variants = new Set();
+            if (raw) variants.add(raw);
+            if (norm) variants.add(norm);
+
+            // Remove zeros à esquerda (para casos de ID numérico)
+            const noZeros = norm.replace(/^0+/, '');
+            if (noZeros) variants.add(noZeros);
+
+            // Se for numérico, adiciona a versão number-string (sem casas decimais)
+            if (/^\d+$/.test(norm)) {
+                const n = Number(norm);
+                if (Number.isFinite(n)) variants.add(String(n));
+            }
+            return Array.from(variants).filter(Boolean);
+        }
+
+
         // ============================================
         // FAST CLIENT LOOKUP - Cache-first com timeout
         // ============================================
@@ -15424,7 +15445,15 @@ try {
                     checkBrightnessAndToggleTorch(imageData);
 
                     // Solução 3: Permitir leitura invertida (attemptBoth)
-                    const code = jsQR(imageData.data, actualWidth, actualHeight, {
+                    const qrDecoder = window.jsQR;
+                    if (typeof qrDecoder !== 'function') {
+                        // jsQR ainda não disponível (carregamento atrasado/caching). Continua tentando sem travar.
+                        qrStatusText.textContent = 'Carregando leitor de QR...';
+                        qrAnimationFrame = requestAnimationFrame(tick);
+                        return;
+                    }
+
+                    const code = qrDecoder(imageData.data, actualWidth, actualHeight, {
                         inversionAttempts: 'attemptBoth'
                     });
 
@@ -15451,9 +15480,10 @@ try {
             document.querySelector('.qr-loading-text').textContent = 'Buscando endereço...';
 
             const qrTokenRaw = extractQrToken(qrData);
-            const qrToken = normalizeQrId(qrTokenRaw);
-
-            let foundRecord = null;
+            const qrVariants = getQrTokenVariants(qrTokenRaw);
+            // Normalizado principal (primeiro item mais "forte")
+            const qrToken = qrVariants[0] || normalizeQrId(qrTokenRaw);
+let foundRecord = null;
 
             try {
                 // ============================================
@@ -15462,7 +15492,19 @@ try {
 
                 // 1. Tenta buscar pelo índice spx_tn (mais rápido)
                 try {
-                    foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', qrTokenRaw);
+                    for (const cand of qrVariants) {
+                        try {
+                            foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', cand);
+                        } catch (e) {}
+                        if (foundRecord) break;
+                        // Alguns caches podem armazenar spx_tn como número
+                        if (/^\d+$/.test(cand)) {
+                            try {
+                                foundRecord = await getFromCacheByIndex('cachedPlanilha', 'spx_tn', Number(cand));
+                            } catch (e) {}
+                            if (foundRecord) break;
+                        }
+                    }
                 } catch (err) {}
 
                 // 2. Se não encontrou, busca manual no cachedPlanilha
@@ -15470,9 +15512,11 @@ try {
                     try {
                         const cachedData = await getAllFromOfflineDB('cachedPlanilha');
                         if (cachedData && cachedData.length > 0) {
-                            foundRecord = cachedData.find(item =>
-                                item.spx_tn && normalizeQrId(item.spx_tn) === qrToken
-                            );
+                            foundRecord = cachedData.find(item => {
+                                if (!item.spx_tn) return false;
+                                const itemNorm = normalizeQrId(item.spx_tn);
+                                return qrVariants.includes(itemNorm) || qrVariants.includes(String(item.spx_tn).trim());
+                            });
                         }
                     } catch (err) {}
                 }
@@ -15482,9 +15526,11 @@ try {
                     try {
                         const offlineData = await getAllFromOfflineDB('pendingPlanilha');
                         if (offlineData && offlineData.length > 0) {
-                            foundRecord = offlineData.find(item =>
-                                item.spx_tn && normalizeQrId(item.spx_tn) === qrToken
-                            );
+                            foundRecord = offlineData.find(item => {
+                                if (!item.spx_tn) return false;
+                                const itemNorm = normalizeQrId(item.spx_tn);
+                                return qrVariants.includes(itemNorm) || qrVariants.includes(String(item.spx_tn).trim());
+                            });
                         }
                     } catch (err) {}
                 }
@@ -15500,7 +15546,7 @@ try {
                                 const ids = props.ids ? props.ids.split(',') : [];
 
                                 // Verifica se o QR code corresponde a algum ID
-                                if (ids.some(id => normalizeQrId(id) === qrToken)) {
+                                if (ids.some(id => qrVariants.includes(normalizeQrId(id)) || qrVariants.includes(String(id).trim()))) {
                                     // Extrai dados do marcador
                                     const addresses = props.allAddresses ?
                                         (typeof props.allAddresses === 'string' ? props.allAddresses.split('|||') : props.allAddresses) :
@@ -15510,7 +15556,7 @@ try {
                                         [];
 
                                     // Encontra o índice correspondente ao ID
-                                    const idIndex = ids.findIndex(id => normalizeQrId(id) === qrToken);
+                                    const idIndex = ids.findIndex(id => qrVariants.includes(normalizeQrId(id)) || qrVariants.includes(String(id).trim()));
 
                                     foundRecord = {
                                         id: qrTokenRaw,
