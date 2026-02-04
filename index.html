@@ -9451,7 +9451,7 @@
                 // Primeira passada: identifica matches e coleta ícones necessários
                 const updatedFeatures = features.map(feature => {
                     const props = feature.properties;
-                    const featureAddr = props.address || '';
+                    const featureAddr = props.address || props.destination_address || props.destinationAddress || '';
                     const normalizedFeatureAddr = normalizeAddressForComparison(featureAddr);
 
                     // STEP 1: Comparação exata primeiro
@@ -9973,7 +9973,7 @@
 
                 const updatedFeatures = features.map(feature => {
                     const props = feature.properties;
-                    const featureAddr = props.address || '';
+                    const featureAddr = props.address || props.destination_address || props.destinationAddress || '';
                     const normalizedFeatureAddr = normalizeAddressForComparison(featureAddr);
 
                     // MATCH 1: Comparação exata
