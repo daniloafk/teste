@@ -15414,53 +15414,66 @@ try {
         }
 
         function startScanning() {
-            if (!qrStream) return;
+            if (!qrStream || !qrVideo || !qrCanvas || !qrCanvasContext) return;
+
+            // Usa tanto window.jsQR quanto jsQR (varia por ambiente)
+            const qrDecoder = (typeof window !== 'undefined' && window.jsQR) ? window.jsQR : (typeof jsQR !== 'undefined' ? jsQR : null);
 
             function tick() {
                 if (!qrModal.classList.contains('active')) return;
 
-                if (qrVideo.readyState === qrVideo.HAVE_ENOUGH_DATA) {
-                    // Solução 1: Reduzir resolução de processamento (640x480)
-                    const processWidth = 640;
-                    const processHeight = Math.floor((qrVideo.videoHeight / qrVideo.videoWidth) * processWidth);
+                try {
+                    // Aguarda vídeo pronto
+                    if (qrVideo.readyState < qrVideo.HAVE_ENOUGH_DATA || !qrVideo.videoWidth || !qrVideo.videoHeight) {
+                        qrAnimationFrame = requestAnimationFrame(tick);
+                        return;
+                    }
 
-                    qrCanvas.width = processWidth;
-                    qrCanvas.height = processHeight;
-
-                    qrCanvasContext.drawImage(qrVideo, 0, 0, processWidth, processHeight);
-
-                    // Solução 2: Limitar área de leitura (ROI - Region of Interest)
-                    const scanSize = 300;
-                    const centerX = Math.floor(processWidth / 2);
-                    const centerY = Math.floor(processHeight / 2);
-                    const startX = Math.max(0, centerX - Math.floor(scanSize / 2));
-                    const startY = Math.max(0, centerY - Math.floor(scanSize / 2));
-                    const actualWidth = Math.min(scanSize, processWidth - startX);
-                    const actualHeight = Math.min(scanSize, processHeight - startY);
-
-                    // Captura apenas o centro da imagem
-                    const imageData = qrCanvasContext.getImageData(startX, startY, actualWidth, actualHeight);
-
-                    // Auto-detect dark environment and toggle torch
-                    checkBrightnessAndToggleTorch(imageData);
-
-                    // Solução 3: Permitir leitura invertida (attemptBoth)
-                    const qrDecoder = window.jsQR;
                     if (typeof qrDecoder !== 'function') {
-                        // jsQR ainda não disponível (carregamento atrasado/caching). Continua tentando sem travar.
                         qrStatusText.textContent = 'Carregando leitor de QR...';
                         qrAnimationFrame = requestAnimationFrame(tick);
                         return;
                     }
 
-                    const code = qrDecoder(imageData.data, actualWidth, actualHeight, {
-                        inversionAttempts: 'attemptBoth'
-                    });
+                    // Renderiza frame em tamanho reduzido (melhor desempenho, sem perder leitura)
+                    const targetW = 640;
+                    const w = Math.max(320, Math.min(targetW, qrVideo.videoWidth));
+                    const h = Math.max(240, Math.floor((qrVideo.videoHeight / qrVideo.videoWidth) * w));
+
+                    if (h < 40) { // guarda contra altura inválida
+                        qrAnimationFrame = requestAnimationFrame(tick);
+                        return;
+                    }
+
+                    qrCanvas.width = w;
+                    qrCanvas.height = h;
+
+                    qrCanvasContext.drawImage(qrVideo, 0, 0, w, h);
+
+                    // 1) Tenta decodificar o frame inteiro (mais compatível; evita “parar de ler”)
+                    let imageData = qrCanvasContext.getImageData(0, 0, w, h);
+                    checkBrightnessAndToggleTorch(imageData);
+
+                    let code = qrDecoder(imageData.data, w, h, { inversionAttempts: 'attemptBoth' });
+
+                    // 2) Se falhar, tenta ROI central (melhora em QRs pequenos/ruído)
+                    if (!code || !code.data) {
+                        const roi = Math.max(260, Math.min(420, Math.min(w, h)));
+                        const sx = Math.floor((w - roi) / 2);
+                        const sy = Math.floor((h - roi) / 2);
+
+                        imageData = qrCanvasContext.getImageData(sx, sy, roi, roi);
+                        checkBrightnessAndToggleTorch(imageData);
+
+                        code = qrDecoder(imageData.data, roi, roi, { inversionAttempts: 'attemptBoth' });
+                    }
 
                     if (code && code.data) {
                         searchAndShowResult(code.data);
                         return;
                     }
+                } catch (e) {
+                    // Não trava o loop de leitura por erro de canvas/video
                 }
 
                 qrAnimationFrame = requestAnimationFrame(tick);
@@ -15632,11 +15645,50 @@ let foundRecord = null;
                 // ============================================
                 if (isOnline && !foundRecord) {
                     try {
-                        const { data, error } = await db
-                            .from('planilha')
-                            .select('*')
-                            .eq('spx_tn', qrTokenRaw)
-                            .limit(1);
+                        // Tenta achar no Supabase por múltiplas variantes do token (string/numero/sem zeros)
+                        let data = null, error = null;
+
+                        try {
+                            const resp = await db
+                                .from('planilha')
+                                .select('*')
+                                .in('spx_tn', qrVariants)
+                                .limit(1);
+                            data = resp.data;
+                            error = resp.error;
+                        } catch (e) {}
+
+                        // Fallback: tenta varrer variantes individualmente (para casos de tipo diferente no banco)
+                        if ((!data || data.length === 0) && qrVariants && qrVariants.length) {
+                            for (const cand of qrVariants) {
+                                try {
+                                    const resp2 = await db
+                                        .from('planilha')
+                                        .select('*')
+                                        .eq('spx_tn', cand)
+                                        .limit(1);
+                                    if (!resp2.error && resp2.data && resp2.data.length) {
+                                        data = resp2.data;
+                                        error = resp2.error;
+                                        break;
+                                    }
+                                } catch (e) {}
+                                if (/^\d+$/.test(cand)) {
+                                    try {
+                                        const resp3 = await db
+                                            .from('planilha')
+                                            .select('*')
+                                            .eq('spx_tn', Number(cand))
+                                            .limit(1);
+                                        if (!resp3.error && resp3.data && resp3.data.length) {
+                                            data = resp3.data;
+                                            error = resp3.error;
+                                            break;
+                                        }
+                                    } catch (e) {}
+                                }
+                            }
+                        }
 
                         if (!error && data && data.length > 0) {
                             foundRecord = data[0];
