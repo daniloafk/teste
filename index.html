@@ -8337,14 +8337,8 @@ try {
             // Esconde loader quando o mapa carregar
             map.on('load', () => {
                 updateLoader('ready', 'Pronto!');
-<<<<<<< HEAD
                 // O marcador GPS nativo do Mapbox é gerenciado pelo GeolocateControl
                 // Não precisamos mais de layers customizadas
-=======
-                // Setup GPS layers e inicia rastreamento (um único watchPosition)
-                setupGpsLayers();
-                startGpsTracking();
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
 
                 setTimeout(hideLoader, 300);
             });
@@ -8531,7 +8525,6 @@ try {
 
             // ============================================
             // ============================================
-<<<<<<< HEAD
             // GEOLOCATE CONTROL - Marcador nativo do Mapbox
             // ============================================
             // Usa o marcador nativo do Mapbox (ponto azul) com configurações otimizadas
@@ -8546,22 +8539,6 @@ try {
                 showUserLocation: true,   // Mostra o ponto azul nativo
                 showUserHeading: true,    // Mostra direção do usuário
                 showAccuracyCircle: true, // Mostra círculo de precisão
-=======
-            // GEOLOCATE CONTROL - Configuração (botão apenas)
-            // ============================================
-            // Observação: o marcador nativo do GeolocateControl é desativado.
-            // O app desenha o "ponto azul" via layers nativos (WebGL) para evitar lag/jitter.
-            geolocateControl = new mapboxgl.GeolocateControl({
-                positionOptions: {
-                    enableHighAccuracy: true,
-                    maximumAge: 0,
-                    timeout: 8000
-                },
-                trackUserLocation: false,
-                showUserLocation: false,
-                showUserHeading: false,
-                showAccuracyCircle: false,
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
                 fitBoundsOptions: {
                     maxZoom: 17,
                     linear: false,
@@ -8590,11 +8567,7 @@ try {
                     handleGeolocateEvent(e);
                 }
 
-<<<<<<< HEAD
                 // Log para debug
-=======
-                // Log para debug (pode ser removido em produção)
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
                 debugLog('📍 Posição atualizada:', {
                     lat: e.coords.latitude.toFixed(6),
                     lng: e.coords.longitude.toFixed(6),
@@ -16605,7 +16578,6 @@ try {
 
         
         // ============================================
-<<<<<<< HEAD
         // GPS em tempo real
         // - Marcador nativo do Mapbox (GeolocateControl) para visualização geral
         // - Filtro anti-outlier APENAS para navegação (evita saltos durante direção)
@@ -16883,313 +16855,12 @@ try {
                         accuracy: accuracy,
                         heading: smoothed.heading,
                         speed: speed
-=======
-        // GPS em tempo real (REFEITO do zero)
-        // - Um único watchPosition
-        // - Filtro anti-outlier (saltos fantasmas)
-        // - "Ponto azul" desenhado via layers nativos (WebGL) -> sem lag ao arrastar o mapa
-        // - Círculo de precisão próprio (accuracy)
-        // ============================================
-
-        const GPS_LAYER_IDS = {
-            source: 'gps-user-source',
-            accuracy: 'gps-accuracy-source',
-            accuracyFill: 'gps-accuracy-fill',
-            accuracyLine: 'gps-accuracy-line',
-            halo: 'gps-user-halo',
-            dot: 'gps-user-dot'
-        };
-
-                let gpsWatchId = null;
-        let gpsLastAccepted = null;   // {lng,lat,t,accuracy}
-        let gpsSmoothed = null;       // {lng,lat}
-
-        // Perfil A (mais estável): janela + confirmação + deadband
-        let gpsWindow = [];           // últimos fixes válidos (para mediana)
-        const GPS_WINDOW_SIZE = 5;
-        let gpsCandidate = null;      // fix suspeito aguardando confirmação
-        let gpsCandidateCount = 0;
-        let gpsLastRender = null;     // {lng,lat,t}
-        let navigationModeActive = false;
-
-        function toRad(d) { return d * Math.PI / 180; }
-
-        function haversineMeters(lat1, lng1, lat2, lng2) {
-            const R = 6371000;
-            const dLat = toRad(lat2 - lat1);
-            const dLng = toRad(lng2 - lng1);
-            const a = Math.sin(dLat / 2) ** 2 +
-                      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-            return 2 * R * Math.asin(Math.sqrt(a));
-        }
-
-        function makeCircleGeoJSON(lng, lat, radiusMeters, steps = 64) {
-            // Polígono aproximado (WGS84) suficiente para círculo de precisão
-            const coords = [];
-            const R = 6378137;
-            const d = radiusMeters / R;
-            const latRad = toRad(lat);
-            const lngRad = toRad(lng);
-            for (let i = 0; i <= steps; i++) {
-                const brg = 2 * Math.PI * (i / steps);
-                const lat2 = Math.asin(Math.sin(latRad) * Math.cos(d) + Math.cos(latRad) * Math.sin(d) * Math.cos(brg));
-                const lng2 = lngRad + Math.atan2(Math.sin(brg) * Math.sin(d) * Math.cos(latRad), Math.cos(d) - Math.sin(latRad) * Math.sin(lat2));
-                coords.push([lng2 * 180 / Math.PI, lat2 * 180 / Math.PI]);
-            }
-            return {
-                type: 'Feature',
-                geometry: { type: 'Polygon', coordinates: [coords] },
-                properties: {}
-            };
-        }
-
-        function setupGpsLayers() {
-            if (!map) return;
-
-            // Fonte do ponto
-            if (!map.getSource(GPS_LAYER_IDS.source)) {
-                map.addSource(GPS_LAYER_IDS.source, {
-                    type: 'geojson',
-                    data: {
-                        type: 'Feature',
-                        geometry: { type: 'Point', coordinates: [0, 0] },
-                        properties: {}
-                    }
-                });
-            }
-
-            // Fonte do círculo de precisão
-            if (!map.getSource(GPS_LAYER_IDS.accuracy)) {
-                map.addSource(GPS_LAYER_IDS.accuracy, {
-                    type: 'geojson',
-                    data: {
-                        type: 'Feature',
-                        geometry: { type: 'Polygon', coordinates: [[[0,0],[0,0],[0,0],[0,0]]] },
-                        properties: {}
-                    }
-                });
-            }
-
-            // Layers (ordem importa: accuracy abaixo, halo abaixo do dot)
-            if (!map.getLayer(GPS_LAYER_IDS.accuracyFill)) {
-                map.addLayer({
-                    id: GPS_LAYER_IDS.accuracyFill,
-                    type: 'fill',
-                    source: GPS_LAYER_IDS.accuracy,
-                    paint: {
-                        'fill-color': '#3b82f6',
-                        'fill-opacity': 0.10
-                    }
-                });
-            }
-
-            if (!map.getLayer(GPS_LAYER_IDS.accuracyLine)) {
-                map.addLayer({
-                    id: GPS_LAYER_IDS.accuracyLine,
-                    type: 'line',
-                    source: GPS_LAYER_IDS.accuracy,
-                    paint: {
-                        'line-color': '#3b82f6',
-                        'line-opacity': 0.35,
-                        'line-width': 2
-                    }
-                });
-            }
-
-            if (!map.getLayer(GPS_LAYER_IDS.halo)) {
-                map.addLayer({
-                    id: GPS_LAYER_IDS.halo,
-                    type: 'circle',
-                    source: GPS_LAYER_IDS.source,
-                    paint: {
-                        // halo leve
-                        'circle-radius': 11,
-                        'circle-color': '#3b82f6',
-                        'circle-opacity': 0.18
-                    }
-                });
-            }
-
-            if (!map.getLayer(GPS_LAYER_IDS.dot)) {
-                map.addLayer({
-                    id: GPS_LAYER_IDS.dot,
-                    type: 'circle',
-                    source: GPS_LAYER_IDS.source,
-                    paint: {
-                        // PONTO AZUL (menor, estilo nativo)
-                        'circle-radius': 6,
-                        'circle-color': '#3b82f6',
-                        'circle-stroke-color': '#ffffff',
-                        'circle-stroke-width': 2,
-                        'circle-opacity': 1
-                    }
-                });
-            }
-        }
-
-        function updateGpsLayers(lng, lat, accuracyMeters) {
-            if (!map) return;
-
-            const pt = {
-                type: 'Feature',
-                geometry: { type: 'Point', coordinates: [lng, lat] },
-                properties: {}
-            };
-
-            const src = map.getSource(GPS_LAYER_IDS.source);
-            if (src) src.setData(pt);
-
-            const acc = Math.max(0, Math.min(accuracyMeters || 0, 1000));
-            const accSrc = map.getSource(GPS_LAYER_IDS.accuracy);
-            if (accSrc) accSrc.setData(makeCircleGeoJSON(lng, lat, acc, 64));
-        }
-
-        
-        function acceptGpsFix(lng, lat, accuracy, t) {
-            // Perfil A: muito estável
-            const acc = Number(accuracy);
-            const ts = Number(t) || Date.now();
-
-            // "Gating" por qualidade: não aceita leituras ruins
-            // (permite iniciar um pouco mais solto, mas ainda com teto)
-            if (!gpsLastAccepted) {
-                if (acc && acc > 120) return false;
-                gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
-                gpsWindow = [{ lng, lat, t: ts, accuracy: acc || null }];
-                gpsCandidate = null; gpsCandidateCount = 0;
-                return true;
-            }
-
-            // Se accuracy muito ruim, ignora totalmente (reduz jitter quando GPS degrada)
-            if (acc && acc > 60) return false;
-
-            const dt = Math.max(0.001, (ts - gpsLastAccepted.t) / 1000);
-            const dist = haversineMeters(gpsLastAccepted.lat, gpsLastAccepted.lng, lat, lng);
-            const speed = dist / dt; // m/s
-
-            // Hard outliers (teleporte / velocidade impossível)
-            if (dt < 5 && dist > 50) return false;
-            if (speed > 30 && dist > 25) return false; // ~108 km/h
-
-            // Se o salto é grande em relação à precisão, exige confirmação (2 leituras consistentes)
-            const suspicious = (dist > Math.max(35, (acc ? acc * 4 : 60)));
-            if (suspicious) {
-                if (!gpsCandidate) {
-                    gpsCandidate = { lng, lat, t: ts, accuracy: acc || null };
-                    gpsCandidateCount = 1;
-                    return false;
-                }
-                // Confirma se a leitura atual é consistente com o candidato anterior
-                const candDist = haversineMeters(gpsCandidate.lat, gpsCandidate.lng, lat, lng);
-                const candDt = Math.max(0.001, (ts - gpsCandidate.t) / 1000);
-
-                if (candDt <= 8 && candDist <= Math.max(18, (acc ? acc * 2 : 25))) {
-                    gpsCandidateCount += 1;
-                } else {
-                    gpsCandidate = { lng, lat, t: ts, accuracy: acc || null };
-                    gpsCandidateCount = 1;
-                    return false;
-                }
-
-                if (gpsCandidateCount >= 2) {
-                    // Aceita o ponto confirmado
-                    gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
-                    gpsCandidate = null; gpsCandidateCount = 0;
-                    return true;
-                }
-
-                return false;
-            }
-
-            // OK: aceita e limpa candidato pendente
-            gpsCandidate = null; gpsCandidateCount = 0;
-            gpsLastAccepted = { lng, lat, t: ts, accuracy: acc || null };
-            return true;
-        }
-
-        function medianOf(arr) {
-            const sorted = arr.slice().sort((a, b) => a - b);
-            const mid = Math.floor(sorted.length / 2);
-            return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-        }
-
-        function smoothFix(lng, lat, accuracy, ts) {
-            // Janela (mediana) para matar spikes isolados
-            const acc = Number(accuracy);
-
-            gpsWindow.push({ lng, lat, t: ts || Date.now(), accuracy: acc || null });
-            if (gpsWindow.length > GPS_WINDOW_SIZE) gpsWindow.shift();
-
-            const medLng = medianOf(gpsWindow.map(p => p.lng));
-            const medLat = medianOf(gpsWindow.map(p => p.lat));
-
-            // Suavização ponderada por accuracy (Perfil A = mais "preso")
-            let alpha = 0.22;
-            if (acc && acc <= 20) alpha = 0.28;
-            if (acc && acc > 20) alpha = 0.18;
-            if (acc && acc > 35) alpha = 0.10;
-
-            if (!gpsSmoothed) {
-                gpsSmoothed = { lng: medLng, lat: medLat };
-                gpsLastRender = { lng: medLng, lat: medLat, t: ts || Date.now() };
-                return gpsSmoothed;
-            }
-
-            // Deadband (parado): não atualiza por micro-jitter
-            const jitterDist = haversineMeters(gpsSmoothed.lat, gpsSmoothed.lng, medLat, medLng);
-            const deadband = Math.max(3, (acc ? acc * 0.12 : 6)); // metros
-            const now = ts || Date.now();
-            const sinceRender = gpsLastRender ? (now - gpsLastRender.t) : 999999;
-
-            if (jitterDist < deadband && sinceRender < 6000) {
-                // Mantém fixo (mas permite atualizar o círculo de precisão fora daqui)
-                return gpsSmoothed;
-            }
-
-            gpsSmoothed.lng = gpsSmoothed.lng + alpha * (medLng - gpsSmoothed.lng);
-            gpsSmoothed.lat = gpsSmoothed.lat + alpha * (medLat - gpsSmoothed.lat);
-
-            gpsLastRender = { lng: gpsSmoothed.lng, lat: gpsSmoothed.lat, t: now };
-            return gpsSmoothed;
-        }
-
-function handleGpsPosition(pos) {
-            if (!pos || !pos.coords) return;
-
-            const lng = pos.coords.longitude;
-            const lat = pos.coords.latitude;
-            const accuracy = pos.coords.accuracy || null;
-            const ts = pos.timestamp || Date.now();
-
-            if (!acceptGpsFix(lng, lat, accuracy, ts)) return;
-
-            const sm = smoothFix(lng, lat, accuracy, ts);
-            updateGpsLayers(sm.lng, sm.lat, accuracy || 0);
-
-            // Atualiza estado (se o resto do app usa isso)
-            try {
-                if (typeof GeolocateState !== 'undefined' && GeolocateState.updatePosition) {
-                    GeolocateState.updatePosition(pos.coords);
-                }
-            } catch (e) {}
-
-            // Durante navegação, reaproveita o MESMO fix filtrado (sem watch duplicado)
-            if (navigationModeActive && typeof onNavigationGeolocate === 'function') {
-                onNavigationGeolocate({
-                    coords: {
-                        longitude: sm.lng,
-                        latitude: sm.lat,
-                        accuracy: accuracy,
-                        heading: pos.coords.heading,
-                        speed: pos.coords.speed
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
                     },
                     timestamp: ts
                 });
             }
         }
 
-<<<<<<< HEAD
         /**
          * Inicia modo de navegação (ativa filtro GPS)
          */
@@ -17232,88 +16903,6 @@ function handleGpsPosition(pos) {
                     }
                 }, 500);
             }
-=======
-        function startGpsTracking() {
-            if (gpsWatchId !== null) return;
-
-            if (!navigator.geolocation) {
-                console.warn('Geolocation não disponível neste dispositivo/navegador.');
-                return;
-            }
-
-            gpsWatchId = navigator.geolocation.watchPosition(
-                handleGpsPosition,
-                (err) => {
-                    console.warn('Erro no GPS:', err && err.message ? err.message : err);
-                },
-                {
-                    enableHighAccuracy: true,
-                    maximumAge: 0,
-                    timeout: 10000
-                }
-            );
-        }
-
-        function stopGpsTracking() {
-            if (gpsWatchId !== null) {
-                navigator.geolocation.clearWatch(gpsWatchId);
-                gpsWatchId = null;
-            }
-            gpsLastAccepted = null;
-            gpsSmoothed = null;
-            gpsWindow = [];
-            gpsCandidate = null;
-            gpsCandidateCount = 0;
-            gpsLastRender = null;
-        }
-        // ==============================
-        // GPS helpers: 1-shot update + best center
-        // ==============================
-        function getBestGpsCenter() {
-            if (typeof gpsSmoothed !== 'undefined' && gpsSmoothed && isFinite(gpsSmoothed.lng) && isFinite(gpsSmoothed.lat)) {
-                return { lng: gpsSmoothed.lng, lat: gpsSmoothed.lat };
-            }
-            if (typeof gpsLastAccepted !== 'undefined' && gpsLastAccepted && isFinite(gpsLastAccepted.lng) && isFinite(gpsLastAccepted.lat)) {
-                return { lng: gpsLastAccepted.lng, lat: gpsLastAccepted.lat };
-            }
-            return null;
-        }
-
-        function requestOneShotGpsUpdate(reason = 'oneshot', opts = {}) {
-            const { recenter = false, zoomMin = 14 } = opts || {};
-            if (!navigator.geolocation) return;
-
-            // Não dispara while camera modal open (evita bug em alguns browsers)
-            const now = Date.now();
-            if (typeof UiGpsState !== 'undefined') {
-                if (UiGpsState.qrModalOpen) return;
-                if (now < (UiGpsState.suspendGpsRefreshUntil || 0)) return;
-            }
-
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    // Passa pelo MESMO pipeline (Perfil A) para evitar saltos
-                    try { handleGpsPosition(position); } catch (e) {}
-
-                    if (recenter && map && mapFullyInitialized && !isAdjustMode && !currentNavigation) {
-                        const best = getBestGpsCenter();
-                        if (best) {
-                            map.easeTo({
-                                center: [best.lng, best.lat],
-                                zoom: Math.max(map.getZoom(), zoomMin),
-                                duration: 900
-                            });
-                        }
-                    }
-                },
-                () => {},
-                {
-                    enableHighAccuracy: true,
-                    timeout: 10000,
-                    maximumAge: 0
-                }
-            );
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
         }
 
 // Calculate distance from point to line segment
@@ -17634,7 +17223,6 @@ function handleGpsPosition(pos) {
 
         function startNavigationTracking() {
             if (!currentNavigation) return;
-<<<<<<< HEAD
             
             // Ativa modo de navegação com filtro GPS
             startNavigationGpsMode();
@@ -17643,22 +17231,12 @@ function handleGpsPosition(pos) {
             if (geolocateControl && !GeolocateState.isTracking) {
                 geolocateControl.trigger();
             }
-=======
-            navigationModeActive = true;
-            // Garante que o rastreamento GPS global esteja ativo
-            startGpsTracking();
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
         }
 
         // Stop navigation tracking
         function stopNavigationTracking() {
-<<<<<<< HEAD
             // Desativa modo de navegação (para o filtro)
             stopNavigationGpsMode();
-=======
-            // Navegação para de consumir updates, mas o GPS global pode continuar ativo.
-            navigationModeActive = false;
->>>>>>> eaa67ef4f616d7c0689e1ea30c49710bac40117e
             lastNavPosition = null;
 
             // Reset map orientation smoothly
