@@ -1,7 +1,13 @@
-// Service Worker - Mapa de Entregas v5
-const CACHE_NAME = 'mapa-entregas-v5';
-const TILE_CACHE_NAME = 'mapbox-tiles-v1';
-const HTML_CACHE_NAME = 'mapa-html-v3';
+// Service Worker - Mapa de Entregas v6 (Otimizado)
+const CACHE_NAME = 'mapa-entregas-v6';
+const TILE_CACHE_NAME = 'mapbox-tiles-v2';
+const HTML_CACHE_NAME = 'mapa-html-v4';
+
+// Debug mode - defina como true para ativar logs
+const SW_DEBUG = false;
+const swLog = (...args) => { if (SW_DEBUG) console.log(...args); };
+const swWarn = (...args) => { if (SW_DEBUG) console.warn(...args); };
+const swError = (...args) => { if (SW_DEBUG) console.error(...args); };
 
 // Ícones inline para notificações push (evita arquivos externos)
 const NOTIFICATION_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTIiIGhlaWdodD0iMTkyIiB2aWV3Qm94PSIwIDAgMTkyIDE5MiI+PGNpcmNsZSBjeD0iOTYiIGN5PSI5NiIgcj0iOTYiIGZpbGw9IiMzYjgyZjYiLz48cGF0aCBkPSJNOTYgMzJjLTI2LjUgMC00OCAyMS41LTQ4IDQ4djE2YzAgMTcuNy0xNC4zIDMyLTMyIDMydjE2aDY0YzAgMTcuNyAxNC4zIDMyIDMyIDMyczMyLTE0LjMgMzItMzJoNjR2LTE2Yy0xNy43IDAtMzItMTQuMy0zMi0zMlY4MGMwLTI2LjUtMjEuNS00OC00OC00OHoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=';
@@ -21,30 +27,47 @@ const CDN_ASSETS = [
 self.addEventListener('install', event => {
     // Obtém o scope dentro do evento onde self.registration está disponível
     const scope = self.registration.scope;
-    console.log('📦 Service Worker: Instalando...', scope);
+    swLog('📦 Service Worker: Instalando...', scope);
 
     event.waitUntil(
         (async () => {
             // Cache para assets CDN
             const cache = await caches.open(CACHE_NAME);
-            console.log('📦 Cacheando assets CDN...');
+            swLog('📦 Cacheando assets CDN...');
 
-            // Cacheia CDN assets (pode falhar individualmente sem quebrar tudo)
-            for (const url of CDN_ASSETS) {
+            // MELHORIA: Cache paralelo com timeout individual para evitar bloqueio
+            const cachePromises = CDN_ASSETS.map(async url => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+                
                 try {
-                    const response = await fetch(url, { mode: 'cors' });
+                    const response = await fetch(url, { 
+                        mode: 'cors',
+                        signal: controller.signal 
+                    });
+                    clearTimeout(timeoutId);
+                    
                     if (response.ok) {
                         await cache.put(url, response);
-                        console.log('📦 Cacheado:', url.split('/').pop());
+                        swLog('📦 Cacheado:', url.split('/').pop());
+                        return { url, success: true };
                     }
+                    return { url, success: false };
                 } catch (err) {
-                    console.warn('⚠️ Falha ao cachear:', url, err.message);
+                    clearTimeout(timeoutId);
+                    swWarn('⚠️ Falha ao cachear:', url.split('/').pop());
+                    return { url, success: false };
                 }
-            }
+            });
+            
+            // Aguarda todas as promises (sucesso ou falha)
+            const results = await Promise.allSettled(cachePromises);
+            const successful = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+            swLog(`📦 CDN Cache: ${successful}/${CDN_ASSETS.length} assets cacheados`);
 
             // Cache HTML principal - CRÍTICO para offline
             const htmlCache = await caches.open(HTML_CACHE_NAME);
-            console.log('📦 Cacheando página HTML...');
+            swLog('📦 Cacheando página HTML...');
 
             try {
                 // Cacheia a página principal (scope = URL base do app)
@@ -54,15 +77,15 @@ self.addEventListener('install', event => {
                     await htmlCache.put(new Request(scope), mainResponse.clone());
                     await htmlCache.put(new Request(scope + 'index.html'), mainResponse.clone());
                     await htmlCache.put('offline-fallback', mainResponse.clone());
-                    console.log('✅ HTML cacheado com sucesso:', scope);
+                    swLog('✅ HTML cacheado com sucesso:', scope);
                 } else {
-                    console.warn('⚠️ Resposta não-ok para HTML:', mainResponse.status);
+                    swWarn('⚠️ Resposta não-ok para HTML:', mainResponse.status);
                 }
             } catch (err) {
-                console.error('❌ Erro ao cachear HTML:', err);
+                swError('❌ Erro ao cachear HTML:', err);
             }
 
-            console.log('✅ Service Worker instalado');
+            swLog('✅ Service Worker instalado');
             await self.skipWaiting();
         })()
     );
@@ -70,7 +93,7 @@ self.addEventListener('install', event => {
 
 // Ativação - limpa caches antigos e assume controle
 self.addEventListener('activate', event => {
-    console.log('🔄 Service Worker: Ativando...');
+    swLog('🔄 Service Worker: Ativando...');
     const validCaches = [CACHE_NAME, TILE_CACHE_NAME, HTML_CACHE_NAME];
 
     event.waitUntil(
@@ -80,7 +103,7 @@ self.addEventListener('activate', event => {
             await Promise.all(
                 cacheNames.map(cacheName => {
                     if (!validCaches.includes(cacheName)) {
-                        console.log('🗑️ Removendo cache antigo:', cacheName);
+                        swLog('🗑️ Removendo cache antigo:', cacheName);
                         return caches.delete(cacheName);
                     }
                 })
@@ -88,7 +111,7 @@ self.addEventListener('activate', event => {
 
             // Assume controle de todas as páginas imediatamente
             await self.clients.claim();
-            console.log('✅ Service Worker ativado e controlando páginas');
+            swLog('✅ Service Worker ativado e controlando páginas');
         })()
     );
 });
@@ -107,19 +130,19 @@ async function limitCacheSize(cacheName, maxSize) {
 
 // Busca HTML do cache com múltiplas tentativas
 async function getOfflineHTML(request) {
-    console.log('📴 Buscando HTML offline para:', request.url);
+    swLog('📴 Buscando HTML offline para:', request.url);
 
     // 1. Tenta match exato
     let cached = await caches.match(request);
     if (cached) {
-        console.log('📴 [1] Match exato encontrado');
+        swLog('📴 [1] Match exato encontrado');
         return cached;
     }
 
     // 2. Tenta match por URL string
     cached = await caches.match(request.url);
     if (cached) {
-        console.log('📴 [2] Match por URL encontrado');
+        swLog('📴 [2] Match por URL encontrado');
         return cached;
     }
 
@@ -127,17 +150,17 @@ async function getOfflineHTML(request) {
     const htmlCache = await caches.open(HTML_CACHE_NAME);
     cached = await htmlCache.match('offline-fallback');
     if (cached) {
-        console.log('📴 [3] Fallback offline encontrado');
+        swLog('📴 [3] Fallback offline encontrado');
         return cached;
     }
 
     // 4. Busca qualquer entrada no HTML cache
     const htmlKeys = await htmlCache.keys();
-    console.log('📴 [4] Chaves no HTML cache:', htmlKeys.length);
+    swLog('📴 [4] Chaves no HTML cache:', htmlKeys.length);
     for (const key of htmlKeys) {
         cached = await htmlCache.match(key);
         if (cached) {
-            console.log('📴 [4] Usando chave:', key.url || key);
+            swLog('📴 [4] Usando chave:', key.url || key);
             return cached;
         }
     }
@@ -151,14 +174,14 @@ async function getOfflineHTML(request) {
             if (key.url && (key.url.endsWith('/') || key.url.endsWith('.html') || key.url.endsWith('index.html'))) {
                 cached = await cache.match(key);
                 if (cached) {
-                    console.log('📴 [5] HTML encontrado em cache:', cacheName, key.url);
+                    swLog('📴 [5] HTML encontrado em cache:', cacheName, key.url);
                     return cached;
                 }
             }
         }
     }
 
-    console.log('📴 Nenhum HTML encontrado no cache');
+    swLog('📴 Nenhum HTML encontrado no cache');
     return null;
 }
 
@@ -185,12 +208,12 @@ self.addEventListener('fetch', event => {
                         const htmlCache = await caches.open(HTML_CACHE_NAME);
                         await htmlCache.put(event.request, response.clone());
                         await htmlCache.put('offline-fallback', response.clone());
-                        console.log('📥 HTML atualizado no cache');
+                        swLog('📥 HTML atualizado no cache');
                     }
 
                     return response;
                 } catch (error) {
-                    console.log('📴 Offline detectado, buscando do cache...');
+                    swLog('📴 Offline detectado, buscando do cache...');
 
                     // Offline - busca do cache
                     const cached = await getOfflineHTML(event.request);
@@ -290,7 +313,7 @@ self.addEventListener('fetch', event => {
                     }
                     return response;
                 } catch (error) {
-                    console.log('📴 Mapbox recurso não disponível offline:', url.pathname);
+                    swLog('📴 Mapbox recurso não disponível offline:', url.pathname);
                     return new Response('', { status: 503 });
                 }
             })
@@ -315,7 +338,7 @@ self.addEventListener('fetch', event => {
                     }
                     return response;
                 }).catch(() => {
-                    console.log('📴 CDN não disponível offline:', url.pathname);
+                    swLog('📴 CDN não disponível offline:', url.pathname);
                     return new Response('', { status: 503 });
                 });
             })
@@ -385,11 +408,11 @@ self.addEventListener('message', event => {
                     return caches.open(HTML_CACHE_NAME).then(cache => {
                         cache.put('offline-fallback', response.clone());
                         cache.put(new Request(scope), response);
-                        console.log('📦 Página cacheada via mensagem');
+                        swLog('📦 Página cacheada via mensagem');
                     });
                 }
             })
-            .catch(err => console.warn('⚠️ Erro ao cachear página:', err));
+            .catch(err => swWarn('⚠️ Erro ao cachear página:', err));
     }
 });
 
@@ -416,4 +439,4 @@ self.addEventListener('notificationclick', event => {
     );
 });
 
-console.log('🚀 Service Worker v5 carregado');
+swLog('🚀 Service Worker v5 carregado');
